@@ -60,7 +60,7 @@
   [[query-id & _ :as query-v] output-signal]
   (let [{:keys [inputs-fn computation-fn]} (get-in @handlers [query-id :sub])
         inputs (inputs-fn query-v)
-        reset-signal! #(reset! output-signal (computation-fn (if (seq? inputs) (map deref inputs) @inputs) query-v))
+        reset-signal! #(reset! output-signal (computation-fn (if (seqable? inputs) (map deref inputs) @inputs) query-v))
         watches (doall (map-indexed
                         (fn [i input]
                           (let [watch-key (keyword (str query-v "-" i))]
@@ -68,7 +68,7 @@
                                        (fn [_ _ old-state new-state]
                                          (when-not (= old-state new-state)
                                            (reset-signal!))))
-                            [input watch-key])) (if (seq? inputs) inputs [inputs])))]
+                            [input watch-key])) (if (seqable? inputs) inputs [inputs])))]
     (reset-signal!)
     (swap! subscriptions assoc query-v output-signal)
     (make-signal
