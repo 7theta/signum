@@ -11,9 +11,7 @@
 (ns signum.subs
   (:require [signum.interceptors :refer [->interceptor] :as interceptors]))
 
-(declare handlers query->signal signal->query
-         create-signal! dispose-signal!
-         signal-interceptor)
+(declare handlers signals reset-subscriptions! dispose-subscription! signal-interceptor)
 
 (defn reg-sub
   ([query-id inputs-fn computation-fn]
@@ -24,79 +22,84 @@
                  :computation-fn computation-fn}
            :queue (-> [] (concat interceptors) (concat [signal-interceptor]))
            :stack []})
-   (locking query->signal
-     (doseq [[signal query-v] (filter (fn [[signal query-v]]
-                                        (= query-id (first query-v))) @signal->query)]
-       (let [count (:count (get @query->signal query-v))]
-         (dispose-signal! signal)
-         (create-signal! query-v signal)
-         (swap! query->signal assoc-in [query-v :count] count))))))
+   (reset-subscriptions! query-id)))
 
 (defn subscribe
   [[query-id & _ :as query-v] & {:keys [context]}]
-  (when-let [handler-context (get @handlers query-id)]
-    (-> (merge context handler-context)
-        (assoc ::query-v query-v)
-        interceptors/run
-        (get-in [:effects ::signal]))))
+  (locking signals
+    (when-let [handler-context (get @handlers query-id)]
+      (-> (merge context handler-context)
+          (assoc ::query-v query-v)
+          interceptors/run
+          (get-in [:effects ::signal])))))
 
 (defn dispose
   [signal]
-  (when-let [query-v (get @signal->query signal)]
-    (when-let [{:keys [count watches output]} (get @query->signal query-v)]
-      (if (= 1 count)
-        (dispose-signal! signal)
-        (swap! query->signal update-in [query-v :count] dec)))))
+  (locking signals
+    (when-let [registration (get @signals signal)]
+      (if (= 1 (:count registration))
+        (dispose-subscription! signal)
+        (swap! signals update-in [signal :count] dec)))))
+
+(defn make-signal
+  [f & {:keys [on-dispose]}]
+  (let [signal (f)]
+    (swap! signals assoc signal {:count 1
+                                 :dispose-fn (fn []
+                                               (swap! signals dissoc signal)
+                                               (when on-dispose (on-dispose)))})
+    signal))
 
 ;;; Private
 
 (defonce ^:private handlers (atom {}))
-(defonce ^:private query->signal (atom {}))
-(defonce ^:private signal->query (atom {}))
+(defonce ^:private signals (atom {}))
+(defonce ^:private subscriptions (atom {}))
 
-(defn- create-signal!
-  ([query-v]
-   (create-signal! query-v (atom nil)))
-  ([[query-id & _ :as query-v] output]
-   (locking query->signal
-     (let [{:keys [inputs-fn computation-fn]} (get-in @handlers [query-id :sub])
-           inputs (inputs-fn query-v)
-           reset-output! #(reset! output (computation-fn (map deref inputs) query-v))
-           watches (->> inputs
-                        (map-indexed
-                         (fn [i input]
-                           (let [watch-key (keyword (str query-v "-" i))]
-                             (add-watch input watch-key
-                                        (fn [_ _ old-state new-state]
-                                          (when-not (= old-state new-state)
-                                            (reset-output!))))
-                             [input watch-key])))
-                        doall)]
-       (reset-output!)
-       (swap! query->signal assoc query-v {:count 1 :watches watches :output output})
-       (swap! signal->query assoc output query-v)
-       output))))
+(defn- create-subscription!
+  [[query-id & _ :as query-v] output-signal]
+  (let [{:keys [inputs-fn computation-fn]} (get-in @handlers [query-id :sub])
+        inputs (inputs-fn query-v)
+        reset-signal! #(reset! output-signal (computation-fn (if (seq? inputs) (map deref inputs) @inputs) query-v))
+        watches (doall (map-indexed
+                        (fn [i input]
+                          (let [watch-key (keyword (str query-v "-" i))]
+                            (add-watch input watch-key
+                                       (fn [_ _ old-state new-state]
+                                         (when-not (= old-state new-state)
+                                           (reset-signal!))))
+                            [input watch-key])) (if (seq? inputs) inputs [inputs])))]
+    (reset-signal!)
+    (swap! subscriptions assoc query-v output-signal)
+    (make-signal
+     (fn [] output-signal)
+     :on-dispose (fn []
+                   (swap! subscriptions dissoc query-v)
+                   (doseq [[input-signal watch-key] watches]
+                     (remove-watch input-signal watch-key)
+                     (dispose input-signal))))))
 
-(defn dispose-signal!
+(defn dispose-subscription!
   [signal]
-  (locking query->signal
-    (let [query-v (get @signal->query signal)
-          {:keys [watches output]} (get @query->signal query-v)]
-      (doseq [[signal watch-key] watches]
-        (remove-watch signal watch-key)
-        (dispose signal))
-      (swap! query->signal dissoc query-v)
-      (swap! signal->query dissoc output))))
+  (when-let [dispose-fn (get-in @signals [signal :dispose-fn])] (dispose-fn)))
+
+(defn- reset-subscriptions!
+  [query-id]
+  (doseq [[query-v signal] (filter (fn [[query-v signal]]
+                                     (= query-id (first query-v))) @subscriptions)]
+    (let [count (:count (get @signals signal))]
+      (dispose-subscription! signal)
+      (create-subscription! query-v signal)
+      (swap! signals assoc-in [signal :count] count))))
 
 (defn- signal
   [[query-id & _ :as query-v]]
-  (if-let [cached (get-in @query->signal [query-v :output])]
-    (do (swap! query->signal update-in [query-v :count] inc)
-        cached)
-    (create-signal! query-v)))
+  (if-let [signal (get @subscriptions query-v)]
+    (do (swap! signals update-in [signal :count] inc)
+        signal)
+    (create-subscription! query-v (atom {}))))
 
 (def ^:private signal-interceptor
   (->interceptor
    :id :signum.subs/signal-interceptor
-   :before (fn [context]
-             (assoc-in context [:effects ::signal] (signal (get context ::query-v))))))
+   :before #(assoc-in % [:effects ::signal] (signal (get % ::query-v)))))
