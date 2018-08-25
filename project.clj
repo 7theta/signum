@@ -8,7 +8,7 @@
 ;;   the terms of this license.
 ;;   You must not remove this notice, or any others, from this software.
 
-(defproject com.7theta/signum "0.1.1"
+(defproject com.7theta/signum "0.2.0"
   :description "A library for Signals and Signal Reaction Graphs"
   :url "https://github.com/7theta/signum"
   :license {:name "Eclipse Public License"

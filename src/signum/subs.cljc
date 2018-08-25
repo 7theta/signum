@@ -9,7 +9,8 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns signum.subs
-  (:require [signum.interceptors :refer [->interceptor] :as interceptors]))
+  (:require [signum.interceptors :refer [->interceptor] :as interceptors])
+  #?(:clj (:import [clojure.lang ExceptionInfo])))
 
 (declare handlers signals reset-subscriptions! dispose-subscription! signal-interceptor)
 
@@ -27,11 +28,12 @@
 (defn subscribe
   [[query-id & _ :as query-v] & {:keys [context]}]
   (locking signals
-    (when-let [handler-context (get @handlers query-id)]
+    (if-let [handler-context (get @handlers query-id)]
       (-> (merge context handler-context)
           (assoc ::query-v query-v)
           interceptors/run
-          (get-in [:effects ::signal])))))
+          (get-in [:effects ::signal]))
+      (throw (ex-info (str "Invalid query " (pr-str query-v)) {:query query-v})))))
 
 (defn dispose
   [signal]
@@ -59,7 +61,12 @@
 (defn- create-subscription!
   [[query-id & _ :as query-v] output-signal]
   (let [{:keys [inputs-fn computation-fn]} (get-in @handlers [query-id :sub])
-        inputs (inputs-fn query-v)
+        inputs (try
+                 (inputs-fn query-v)
+                 (catch #?(:clj ExceptionInfo :cljs js/Error) e
+                   (throw (ex-info (str "Invalid input in " (pr-str query-v))
+                                   {:query query-v
+                                    :input-query (:query (ex-data e))}))))
         reset-signal! #(reset! output-signal (computation-fn (if (seqable? inputs) (map deref inputs) @inputs) query-v))
         watches (doall (map-indexed
                         (fn [i input]
@@ -79,7 +86,7 @@
                      (remove-watch input-signal watch-key)
                      (dispose input-signal))))))
 
-(defn dispose-subscription!
+(defn- dispose-subscription!
   [signal]
   (when-let [dispose-fn (get-in @signals [signal :dispose-fn])] (dispose-fn)))
 
