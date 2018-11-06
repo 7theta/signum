@@ -58,15 +58,23 @@
 (defonce ^:private signals (atom {}))
 (defonce ^:private subscriptions (atom {}))
 
+(defn- resolve-inputs
+  [[query-id & _ :as query-v] context]
+  (let [inputs-fn (get-in @handlers [query-id :sub :inputs-fn])]
+    (try
+      (try
+        (inputs-fn query-v :context context)
+        (catch clojure.lang.ArityException _
+          (inputs-fn query-v)))
+      (catch #?(:clj ExceptionInfo :cljs js/Error) e
+        (throw (ex-info (str "Invalid input in " (pr-str query-v))
+                        {:query query-v
+                         :input-query (:query (ex-data e))}))))))
+
 (defn- create-subscription!
-  [[query-id & _ :as query-v] output-signal]
-  (let [{:keys [inputs-fn computation-fn]} (get-in @handlers [query-id :sub])
-        inputs (try
-                 (inputs-fn query-v)
-                 (catch #?(:clj ExceptionInfo :cljs js/Error) e
-                   (throw (ex-info (str "Invalid input in " (pr-str query-v))
-                                   {:query query-v
-                                    :input-query (:query (ex-data e))}))))
+  [[query-id & _ :as query-v] output-signal context]
+  (let [{:keys [computation-fn]} (get-in @handlers [query-id :sub])
+        inputs (resolve-inputs query-v context)
         reset-signal! #(reset! output-signal (computation-fn (if (seqable? inputs) (map deref inputs) @inputs) query-v))
         watches (doall (map-indexed
                         (fn [i input]
@@ -77,7 +85,8 @@
                                            (reset-signal!))))
                             [input watch-key])) (if (seqable? inputs) inputs [inputs])))]
     (reset-signal!)
-    (swap! subscriptions assoc query-v output-signal)
+    (swap! subscriptions assoc query-v {:signal output-signal
+                                        :context context})
     (make-signal
      (fn [] output-signal)
      :on-dispose (fn []
@@ -92,21 +101,33 @@
 
 (defn- reset-subscriptions!
   [query-id]
-  (doseq [[query-v signal] (filter (fn [[query-v signal]]
-                                     (= query-id (first query-v))) @subscriptions)]
-    (let [count (:count (get @signals signal))]
-      (dispose-subscription! signal)
-      (create-subscription! query-v signal)
-      (swap! signals assoc-in [signal :count] count))))
+  (locking signals
+    (doseq [[query-v {:keys [signal context]}] (filter (fn [[query-v {:keys [signal context]}]]
+                                                         (= query-id (first query-v))) @subscriptions)]
+      (let [count (:count (get @signals signal))]
+        (dispose-subscription! signal)
+        (create-subscription! query-v signal context)
+        (swap! signals assoc-in [signal :count] count)))))
 
 (defn- signal
-  [[query-id & _ :as query-v]]
-  (if-let [signal (get @subscriptions query-v)]
-    (do (swap! signals update-in [signal :count] inc)
-        signal)
-    (create-subscription! query-v (atom {}))))
+  [[query-id & _ :as query-v] context]
+  (if-let [subscription (get @subscriptions query-v)]
+    (let [{:keys [signal]} subscription
+          {:keys [computation-fn]} (get-in @handlers [query-id :sub])]
+      ;; Need to ensure that the inputs can also be resolved in `context`
+      (if (try
+            (let [inputs (resolve-inputs query-v context)]
+              (if (seqable? inputs) (doall (map deref inputs)) @inputs)
+              true)
+            (catch #?(:clj ExceptionInfo :cljs js/Error) _
+              false))
+        (do
+          (swap! signals update-in [signal :count] inc)
+          signal)
+        (throw (ex-info (str "Invalid query " (pr-str query-v)) {:query query-v}))))
+    (create-subscription! query-v (atom nil) context)))
 
 (def ^:private signal-interceptor
   (->interceptor
    :id :signum.subs/signal-interceptor
-   :before #(assoc-in % [:effects ::signal] (signal (get % ::query-v)))))
+   :before #(assoc-in % [:effects ::signal] (signal (get % ::query-v) %))))
