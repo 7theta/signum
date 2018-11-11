@@ -46,10 +46,11 @@
 (defn make-signal
   [f & {:keys [on-dispose]}]
   (let [signal (f)]
-    (swap! signals assoc signal {:count 1
-                                 :dispose-fn (fn []
-                                               (swap! signals dissoc signal)
-                                               (when on-dispose (on-dispose)))})
+    (when on-dispose
+      (swap! signals assoc signal {:count 1
+                                   :dispose-fn (fn []
+                                                 (swap! signals dissoc signal)
+                                                 (on-dispose))}))
     signal))
 
 ;;; Private
@@ -75,18 +76,21 @@
   [[query-id & _ :as query-v] output-signal context]
   (let [{:keys [computation-fn]} (get-in @handlers [query-id :sub])
         inputs (resolve-inputs query-v context)
-        reset-signal! #(reset! output-signal (computation-fn (if (seqable? inputs) (map deref inputs) @inputs) query-v))
-        watches (doall (map-indexed
-                        (fn [i input]
-                          (let [watch-key (keyword (str query-v "-" i))]
-                            (add-watch input watch-key
-                                       (fn [_ _ old-state new-state]
-                                         (when-not (= old-state new-state)
-                                           (reset-signal!))))
-                            [input watch-key])) (if (seqable? inputs) inputs [inputs])))]
+        reset-signal! (fn []
+                        (if (instance? clojure.lang.Agent output-signal)
+                          (send output-signal (fn [_] (computation-fn (if (seqable? inputs) (map deref inputs) @inputs) query-v)))
+                          (reset! output-signal (computation-fn (if (seqable? inputs) (map deref inputs) @inputs) query-v))))
+        watches (doall
+                 (map-indexed
+                  (fn [i input]
+                    (let [watch-key (keyword (str query-v "-" i))]
+                      (add-watch input watch-key
+                                 (fn [_ _ old-state new-state]
+                                   (when-not (= old-state new-state)
+                                     (reset-signal!))))
+                      [input watch-key])) (if (seqable? inputs) inputs [inputs])))]
     (reset-signal!)
-    (swap! subscriptions assoc query-v {:signal output-signal
-                                        :context context})
+    (swap! subscriptions assoc query-v {:signal output-signal :context context})
     (make-signal
      (fn [] output-signal)
      :on-dispose (fn []
@@ -125,7 +129,8 @@
           (swap! signals update-in [signal :count] inc)
           signal)
         (throw (ex-info (str "Invalid query " (pr-str query-v)) {:query query-v}))))
-    (create-subscription! query-v (atom nil) context)))
+    (create-subscription! query-v #?(:clj (agent nil :error-mode :continue :error-handler (fn [a e] (println (pr-str query-v) e)))
+                                     :cljs (atom nil)) context)))
 
 (def ^:private signal-interceptor
   (->interceptor
