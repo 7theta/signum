@@ -9,7 +9,8 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns signum.subs
-  (:require [signum.interceptors :refer [->interceptor] :as interceptors])
+  (:require [signum.interceptors :refer [->interceptor] :as interceptors]
+            [utilis.fn :refer [fsafe]])
   #?(:clj (:import [clojure.lang ExceptionInfo])))
 
 (declare handlers signals reset-subscriptions! dispose-subscription! signal-interceptor)
@@ -53,6 +54,10 @@
                                                  (on-dispose))}))
     signal))
 
+(defn interceptors
+  [query-id]
+  (get-in @handlers [query-id :queue]))
+
 ;;; Private
 
 (defonce ^:private handlers (atom {}))
@@ -77,9 +82,10 @@
   (let [{:keys [computation-fn]} (get-in @handlers [query-id :sub])
         inputs (resolve-inputs query-v context)
         reset-signal! (fn []
-                        (if (instance? clojure.lang.Agent output-signal)
-                          (send output-signal (fn [_] (computation-fn (if (seqable? inputs) (map deref inputs) @inputs) query-v)))
-                          (reset! output-signal (computation-fn (if (seqable? inputs) (map deref inputs) @inputs) query-v))))
+                        (let [value-fn (fn [_] (computation-fn (if (seqable? inputs) (map deref inputs) @inputs) query-v))]
+                          (if (instance? clojure.lang.Agent output-signal)
+                            (send output-signal value-fn)
+                            (reset! output-signal (value-fn)))))
         watches (doall
                  (map-indexed
                   (fn [i input]
@@ -129,8 +135,10 @@
           (swap! signals update-in [signal :count] inc)
           signal)
         (throw (ex-info (str "Invalid query " (pr-str query-v)) {:query query-v}))))
-    (create-subscription! query-v #?(:clj (agent nil :error-mode :continue :error-handler (fn [a e] (println (pr-str query-v) e)))
-                                     :cljs (atom nil)) context)))
+    (create-subscription! query-v
+                          #?(:clj (agent nil :error-mode :continue :error-handler (fn [a e] (println (pr-str query-v) e)))
+                             :cljs (atom nil))
+                          context)))
 
 (def ^:private signal-interceptor
   (->interceptor
