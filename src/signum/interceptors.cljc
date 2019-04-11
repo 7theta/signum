@@ -13,10 +13,11 @@
 (declare run-interceptors)
 
 (defn ->interceptor
-  [& {:keys [id before after]
+  [& {:keys [id before after] :as opts
       :or {before identity
            after identity}}]
-  {:pre [(not (nil? id))]}
+  (when (nil? id)
+    (throw (ex-info "ID must be preset" opts)))
   {:id id
    :before before
    :after after})
