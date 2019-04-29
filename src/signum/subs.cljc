@@ -9,25 +9,30 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns signum.subs
-  (:require [signum.interceptors :refer [->interceptor] :as interceptors]
-            [utilis.fn :refer [fsafe]])
+  (:require [signum.atom :as s]
+            [signum.interceptors :refer [->interceptor] :as interceptors]
+            [utilis.fn :refer [fsafe]]
+            [clojure.set :as set])
   #?(:clj (:import [clojure.lang ExceptionInfo])))
 
 (def ^:dynamic *context* {})
 
-(declare handlers signals reset-subscriptions! dispose-subscription! signal-interceptor)
+(declare handlers signals reset-subscriptions! retain! release! signal-interceptor)
 
 (defn reg-sub
-  ([query-id inputs-fn computation-fn]
-   (reg-sub query-id nil inputs-fn computation-fn))
-  ([query-id interceptors inputs-fn computation-fn]
-   (swap! handlers assoc query-id
-          {:sub {:inputs-fn inputs-fn
-                 :computation-fn computation-fn}
-           :queue (vec (concat interceptors [signal-interceptor]))
-           :stack []})
-   (reset-subscriptions! query-id)
-   query-id))
+  [query-id & args]
+  (when-not (fn? (last args))
+    (throw (ex-info "Computation fn must be provided" {:query-id query-id
+                                                       :args args})))
+  (let [interceptors (when (vector? (first args)) (first args))]
+    (swap! handlers assoc query-id
+           {:init-fn (let [init-fn (last (butlast args))]
+                       (when (fn? init-fn) init-fn))
+            :computation-fn (last args)
+            :queue (vec (concat interceptors [signal-interceptor]))
+            :stack []}))
+  (reset-subscriptions! query-id)
+  query-id)
 
 (defn subscribe
   [[query-id & _ :as query-v]]
@@ -42,21 +47,17 @@
 (defn dispose
   [signal]
   (locking signals
-    (when-let [registration (get @signals signal)]
-      (if (= 1 (:count registration))
-        (dispose-subscription! signal)
-        (swap! signals update-in [signal :count] dec)))))
+    (release! signal)))
 
-(defn make-signal
-  [f & {:keys [on-dispose]}]
-  (locking signals
-    (let [signal (f)]
-      (when on-dispose
-        (swap! signals assoc signal {:count 1
-                                     :dispose-fn (fn []
-                                                   (swap! signals dissoc signal)
-                                                   (on-dispose))}))
-      signal)))
+(defn track-signal
+  [signal & {:keys [on-dispose]}]
+  (when on-dispose
+    (locking signals
+      (swap! signals assoc signal {:count 0
+                                   :dispose-fn (fn []
+                                                 (swap! signals dissoc signal)
+                                                 (on-dispose))})))
+  signal)
 
 (defn interceptors
   [query-id]
@@ -67,50 +68,55 @@
 (defonce ^:private handlers (atom {}))
 (defonce ^:private signals (atom {}))
 (defonce ^:private subscriptions (atom {}))
+(def ^:private ^:dynamic *implicit-subs* nil)
 
-(defn- resolve-inputs
-  [[query-id & _ :as query-v]]
-  (let [inputs-fn (get-in @handlers [query-id :sub :inputs-fn])]
-    (try
-      (inputs-fn query-v)
-      (catch #?(:clj ExceptionInfo :cljs js/Error) e
-        (throw (ex-info (str ":signum.subs/error Invalid input in " (pr-str query-v))
-                        {:query query-v
-                         :input-query (:query (ex-data e))}))))))
+(defn- retain!
+  [signal]
+  (when (get @signals signal)
+    (swap! signals update-in [signal :count] inc))
+  signal)
+
+(defn- release!
+  [signal]
+  (when-let [registration (get @signals signal)]
+    (if (= 1 (:count registration))
+      (when-let [dispose-fn (:dispose-fn registration)]
+        (dispose-fn))
+      (swap! signals update-in [signal :count] dec)))
+  nil)
 
 (defn- create-subscription!
   [[query-id & _ :as query-v] output-signal]
-  (let [inputs (resolve-inputs query-v)
-        reset-signal! (fn []
-                        (let [computation-fn (get-in @handlers [query-id :sub :computation-fn])
-                              inputs (if (seqable? inputs) (map deref inputs) @inputs)]
-                          #?(:clj (if (instance? clojure.lang.Agent output-signal)
-                                    (send output-signal (fn [_] (computation-fn inputs query-v)))
-                                    (reset! output-signal (computation-fn inputs query-v)))
-                             :cljs (reset! output-signal (computation-fn inputs query-v)))))
-        watches (doall
-                 (map-indexed
-                  (fn [i input]
-                    (let [watch-key (keyword (str query-v "-" i))]
-                      (add-watch input watch-key
-                                 (fn [_ _ old-state new-state]
-                                   (when-not (= old-state new-state)
-                                     (reset-signal!))))
-                      [input watch-key])) (if (seqable? inputs) inputs [inputs])))]
-    (reset-signal!)
+  (let [{:keys [init-fn computation-fn]} (get @handlers query-id)
+        last-used-inputs (atom #{})
+        init-context (when init-fn (init-fn query-v))
+        run-reaction (fn [computation-fn query-v watch-fn]
+                       (binding [*implicit-subs* true]
+                         (s/with-tracking used-inputs
+                           (let [result (if init-fn
+                                          (computation-fn init-context query-v)
+                                          (computation-fn query-v))]
+                             (watch-fn @used-inputs)
+                             (reset! output-signal result)))))
+        watch-inputs (fn watch-inputs [used-inputs]
+                       (doseq [input (set/difference @last-used-inputs used-inputs)]
+
+                         (remove-watch input (str query-v))
+                         (release! input))
+                       (doseq [input (set/difference used-inputs @last-used-inputs)]
+                         (retain! input)
+                         (add-watch input (str query-v)
+                                    (fn [_ _ old-state new-state]
+                                      (when-not (= old-state new-state)
+                                        (run-reaction computation-fn query-v watch-inputs)))))
+                       (reset! last-used-inputs used-inputs))]
+    (run-reaction computation-fn query-v watch-inputs)
     (swap! subscriptions assoc query-v {:signal output-signal
                                         :context *context*})
-    (make-signal (constantly output-signal)
-                 :on-dispose (fn []
-                               (swap! subscriptions dissoc query-v)
-                               (doseq [[input-signal watch-key] watches]
-                                 (remove-watch input-signal watch-key)
-                                 (dispose input-signal))))))
-
-(defn- dispose-subscription!
-  [signal]
-  (when-let [dispose-fn (get-in @signals [signal :dispose-fn])]
-    (dispose-fn)))
+    (track-signal output-signal
+                  :on-dispose (fn []
+                                (watch-inputs #{})
+                                (swap! subscriptions dissoc query-v)))))
 
 (defn- reset-subscriptions!
   [query-id]
@@ -118,26 +124,19 @@
     (doseq [[query-v {:keys [signal context]}] (filter (fn [[query-v {:keys [signal context]}]]
                                                          (= query-id (first query-v))) @subscriptions)]
       (binding [*context* context]
-        (let [count (:count (get @signals signal))]
-          (dispose-subscription! signal)
+        (let [{:keys [count dispose-fn]} (get @signals signal)]
+          (when dispose-fn (dispose-fn))
           (create-subscription! query-v signal)
           (swap! signals assoc-in [signal :count] count))))))
 
 (defn- signal
   [[query-id & _ :as query-v]]
-  (if-let [signal (get-in @subscriptions [query-v :signal])]
-    (try
-      ;; Need to ensure that the inputs can also be resolved in `*context*`
-      (let [inputs (resolve-inputs query-v)]
-        (if (seqable? inputs) (doall (map deref inputs)) @inputs))
-      (swap! signals update-in [signal :count] inc)
-      signal
-      (catch #?(:clj ExceptionInfo :cljs js/Error) _
-        (throw (ex-info (str ":signum.subs/error Invalid inputs in" (pr-str query-v)) {:query query-v}))))
-    (create-subscription! query-v
-                          #?(:clj (agent nil :error-mode :continue
-                                         :error-handler (fn [a e] (println "\n" :signum.subs/error (pr-str query-v) "\n" e)))
-                             :cljs (atom nil)))))
+  (let [signal (if-let [signal (get-in @subscriptions [query-v :signal])]
+                 signal
+                 (create-subscription! query-v (s/atom nil)))]
+    (when-not *implicit-subs*
+      (retain! signal))
+    signal))
 
 (def ^:private signal-interceptor
   (->interceptor
