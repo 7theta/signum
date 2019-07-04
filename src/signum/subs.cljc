@@ -72,8 +72,11 @@
 
 (defn- retain!
   [signal]
-  (when (get @signals signal)
-    (swap! signals update-in [signal :count] inc))
+  (swap! signals
+         (fn [signals]
+           (if (get-in signals [signal :count])
+             (update-in signals [signal :count] inc)
+             signals)))
   signal)
 
 (defn- release!
@@ -82,15 +85,25 @@
     (if (= 1 (:count registration))
       (when-let [dispose-fn (:dispose-fn registration)]
         (dispose-fn))
-      (swap! signals update-in [signal :count] dec)))
+      (swap! signals (fn [signals]
+                       (if (get-in signals [signal :count])
+                         (update-in signals [signal :count] dec)
+                         signals)))))
   nil)
 
 (defn- create-subscription!
   [[query-id & _ :as query-v] output-signal]
   (let [{:keys [init-fn computation-fn]} (get @handlers query-id)
         last-used-inputs (atom #{})
-        init-context (when init-fn (init-fn query-v))
-        run-reaction (fn [computation-fn query-v watch-fn]
+        init-changed? (atom false)
+        init-inputs (atom #{})
+        init-context (when init-fn
+                       (binding [s/*init-context* {:watch-fn (fn [_ _ old-state new-state]
+                                                               (when (not= old-state new-state)
+                                                                 (reset! init-changed? true)))
+                                                   :init-inputs init-inputs}]
+                         (init-fn query-v)))
+        run-reaction (fn run-reaction [computation-fn query-v watch-fn]
                        (binding [*implicit-subs* true]
                          (s/with-tracking used-inputs
                            (let [result (if init-fn
@@ -100,7 +113,6 @@
                              (reset! output-signal result)))))
         watch-inputs (fn watch-inputs [used-inputs]
                        (doseq [input (set/difference @last-used-inputs used-inputs)]
-
                          (remove-watch input (str query-v))
                          (release! input))
                        (doseq [input (set/difference used-inputs @last-used-inputs)]
@@ -111,12 +123,18 @@
                                         (run-reaction computation-fn query-v watch-inputs)))))
                        (reset! last-used-inputs used-inputs))]
     (run-reaction computation-fn query-v watch-inputs)
+    (doseq [init-input @init-inputs]
+      (remove-watch init-input ::s/init))
     (swap! subscriptions assoc query-v {:signal output-signal
                                         :context *context*})
-    (track-signal output-signal
-                  :on-dispose (fn []
-                                (watch-inputs #{})
-                                (swap! subscriptions dissoc query-v)))))
+    (let [signal (track-signal output-signal
+                               :on-dispose (fn []
+                                             (watch-inputs #{})
+                                             (swap! subscriptions dissoc query-v)))]
+      (when @init-changed?
+        (reset! init-changed? false)
+        (run-reaction computation-fn query-v watch-inputs))
+      signal)))
 
 (defn- reset-subscriptions!
   [query-id]

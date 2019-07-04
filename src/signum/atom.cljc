@@ -7,6 +7,7 @@
   #?(:clj (:import [clojure.lang IAtom IAtom2 IRef IDeref ARef IObj IMeta])))
 
 (def ^:dynamic *deref-tracker* nil)
+(def ^:dynamic *init-context* nil)
 
 (declare pr-atom)
 
@@ -69,7 +70,11 @@
 
 (defn atom
   [state]
-  (Atom. (clojure.core/atom state) nil))
+  (let [a (Atom. (clojure.core/atom state) nil)]
+    (when-let [{:keys [watch-fn init-inputs]} *init-context*]
+      (add-watch a ::init watch-fn)
+      (swap! init-inputs conj a))
+    a))
 
 #?(:clj
    (defmacro with-tracking
