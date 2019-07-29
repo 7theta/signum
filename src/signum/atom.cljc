@@ -1,12 +1,22 @@
+;;   Copyright (c) 7theta. All rights reserved.
+;;   The use and distribution terms for this software are covered by the
+;;   Eclipse Public License 1.0 (http://www.eclipse.org/legal/epl-v10.html)
+;;   which can be found in the LICENSE file at the root of this
+;;   distribution.
+;;
+;;   By using this software in any fashion, you are agreeing to be bound by
+;;   the terms of this license.
+;;   You must not remove this notice, or any others, from this software.
+
 (ns signum.atom
   (:refer-clojure :exclude [atom Atom])
-  (:require [utilis.fn :refer [apply-kw]]
+  (:require [utilis.fn :refer [fsafe apply-kw]]
             #?@(:cljs
                 [[goog.string :as gstring]
                  [goog.string.format]]))
   #?(:clj (:import [clojure.lang IAtom IAtom2 IRef IDeref ARef IObj IMeta])))
 
-(def ^:dynamic *deref-tracker* nil)
+(def ^:dynamic *tracker* nil)
 
 (declare pr-atom)
 
@@ -37,7 +47,7 @@
 
   IDeref
   (deref [this]
-    (when  *deref-tracker* (swap! *deref-tracker* conj this))
+    ((fsafe *tracker*) this)
     (.deref backend))
 
   #?(:clj IRef :cljs IWatchable)
@@ -69,18 +79,19 @@
 
 (defn atom
   [state]
-  (Atom. (clojure.core/atom state) nil))
+  (let [a (Atom. (clojure.core/atom state) nil)]
+    ((fsafe *tracker*) a)
+    a))
 
 #?(:clj
    (defmacro with-tracking
-     [inputs & body]
-     `(binding [*deref-tracker* (clojure.core/atom #{})]
-        (let [~inputs *deref-tracker*]
-          ~@body))))
+     [tracker-fn & body]
+     `(binding [*tracker* ~tracker-fn]
+        ~@body)))
 
 ;;; Implementation
 
 (defn pr-atom
   [a w]
   (#?(:clj .write :cljs write-all)
-   w (str "#<signum/Atom@" (#?(:clj format :cljs gstring/format) "0x%x" (hash a)) ": "(-> (.-backend a) deref pr-str) ">")))
+   w (str "#<signum/Atom@" (#?(:clj format :cljs gstring/format) "0x%x" (hash a)) ": " (-> (.-backend a) deref pr-str) ">")))

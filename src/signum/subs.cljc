@@ -11,7 +11,7 @@
 (ns signum.subs
   (:require [signum.atom :as s]
             [signum.interceptors :refer [->interceptor] :as interceptors]
-            [utilis.fn :refer [fsafe]]
+            [utilis.fn :refer [fsafe debounce]]
             [clojure.set :as set])
   #?(:clj (:import [clojure.lang ExceptionInfo])))
 
@@ -72,8 +72,7 @@
 
 (defn- retain!
   [signal]
-  (when (get @signals signal)
-    (swap! signals update-in [signal :count] inc))
+  (swap! signals update-in [signal :count] (fsafe inc))
   signal)
 
 (defn- release!
@@ -82,40 +81,50 @@
     (if (= 1 (:count registration))
       (when-let [dispose-fn (:dispose-fn registration)]
         (dispose-fn))
-      (swap! signals update-in [signal :count] dec)))
+      (swap! signals update-in [signal :count] (fsafe dec))))
   nil)
 
 (defn- create-subscription!
   [[query-id & _ :as query-v] output-signal]
   (let [{:keys [init-fn computation-fn]} (get @handlers query-id)
-        last-used-inputs (atom #{})
-        init-context (when init-fn (init-fn query-v))
-        run-reaction (fn [computation-fn query-v watch-fn]
-                       (binding [*implicit-subs* true]
-                         (s/with-tracking used-inputs
-                           (let [result (if init-fn
-                                          (computation-fn init-context query-v)
-                                          (computation-fn query-v))]
-                             (watch-fn @used-inputs)
-                             (reset! output-signal result)))))
-        watch-inputs (fn watch-inputs [used-inputs]
-                       (doseq [input (set/difference @last-used-inputs used-inputs)]
-
-                         (remove-watch input (str query-v))
-                         (release! input))
-                       (doseq [input (set/difference used-inputs @last-used-inputs)]
-                         (retain! input)
-                         (add-watch input (str query-v)
-                                    (fn [_ _ old-state new-state]
-                                      (when-not (= old-state new-state)
-                                        (run-reaction computation-fn query-v watch-inputs)))))
-                       (reset! last-used-inputs used-inputs))]
-    (run-reaction computation-fn query-v watch-inputs)
-    (swap! subscriptions assoc query-v {:signal output-signal
-                                        :context *context*})
+        init-watched (atom #{})
+        compute-watched (atom #{})
+        subscribe (fn [previously-watched watched reaction-fn a]
+                    (when-not (or (contains? previously-watched a)
+                                  (contains? @watched a))
+                      (retain! a)
+                      (let [reaction-fn (debounce reaction-fn 200)]
+                        (add-watch a (str query-v) (fn [_ _ old-value new-value]
+                                                     (when (not= old-value new-value)
+                                                       (reaction-fn)))))
+                      (swap! watched conj a)))
+        dispose (fn [watched]
+                  (doseq [watch watched]
+                    (remove-watch watch (str query-v))
+                    (release! watch)))
+        init-context (atom ::not-initialized)
+        run-reaction (fn run-reaction []
+                       (try
+                         (when-not (and init-fn (= ::not-initialized @init-context))
+                           (let [watched (atom #{})]
+                             (binding [*implicit-subs* true]
+                               (s/with-tracking (partial subscribe @compute-watched watched run-reaction)
+                                 (dispose (set/difference @compute-watched @watched))
+                                 (reset! compute-watched @watched)
+                                 (reset! output-signal (if init-fn
+                                                         (computation-fn @init-context query-v)
+                                                         (computation-fn query-v)))))))
+                         (catch Exception e
+                           (println ":signum.subs/subscribe" (pr-str query-v) "error")
+                           (throw e))))]
+    (swap! subscriptions assoc query-v {:signal output-signal :context *context*})
+    (when init-fn
+      (s/with-tracking (partial subscribe @init-watched init-watched run-reaction)
+        (reset! init-context (init-fn query-v))))
+    (run-reaction)
     (track-signal output-signal
                   :on-dispose (fn []
-                                (watch-inputs #{})
+                                (dispose (concat @init-watched @compute-watched))
                                 (swap! subscriptions dissoc query-v)))))
 
 (defn- reset-subscriptions!
@@ -131,12 +140,9 @@
 
 (defn- signal
   [[query-id & _ :as query-v]]
-  (let [signal (if-let [signal (get-in @subscriptions [query-v :signal])]
-                 signal
-                 (create-subscription! query-v (s/atom nil)))]
-    (when-not *implicit-subs*
-      (retain! signal))
-    signal))
+  (cond-> (or (get-in @subscriptions [query-v :signal])
+              (create-subscription! query-v (s/atom nil)))
+    (not *implicit-subs*) retain!))
 
 (def ^:private signal-interceptor
   (->interceptor
