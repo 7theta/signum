@@ -2,7 +2,6 @@
 
 [![Current Version](https://img.shields.io/clojars/v/com.7theta/signum.svg)](https://clojars.org/com.7theta/signum)
 [![GitHub license](https://img.shields.io/github/license/7theta/signum.svg)](LICENSE)
-[![Circle CI](https://circleci.com/gh/7theta/signum.svg?style=shield)](https://circleci.com/gh/7theta/signum)
 [![Dependencies Status](https://jarkeeper.com/7theta/signum/status.svg)](https://jarkeeper.com/7theta/signum)
 
 A library for Signals and Signal Reaction Graphs.

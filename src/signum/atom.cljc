@@ -10,7 +10,7 @@
 
 (ns signum.atom
   (:refer-clojure :exclude [atom Atom])
-  (:require [utilis.fn :refer [fsafe apply-kw]]
+  (:require [utilis.fn :refer [fsafe]]
             #?@(:cljs
                 [[goog.string :as gstring]
                  [goog.string.format]]))

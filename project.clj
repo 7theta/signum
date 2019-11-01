@@ -8,12 +8,12 @@
 ;;   the terms of this license.
 ;;   You must not remove this notice, or any others, from this software.
 
-(defproject com.7theta/signum "2.2.0"
+(defproject com.7theta/signum "2.2.1"
   :description "A library for Signals and Signal Reaction Graphs"
   :url "https://github.com/7theta/signum"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
-  :dependencies [[org.clojure/clojure "1.10.1"]
-                 [com.7theta/utilis "1.5.1"]]
+  :dependencies [[com.7theta/utilis "1.8.1"]]
+  :profile {:dev {:dependencies [[org.clojure/clojure "1.10.1"]]}}
   :scm {:name "git"
         :url "https://github.com/7theta/signum"})
