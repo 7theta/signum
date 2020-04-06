@@ -20,17 +20,20 @@
 
 (declare pr-atom)
 
-(deftype Atom [backend meta-map]
+(defprotocol IWatchWatchers
+  (add-watcher-watch [reference key watch-fn])
+  (remove-watcher-watch [reference key]))
 
-  IAtom
+(deftype Atom [backend watches meta-map]
+
   #?@(:clj
-      [(swap [_ f] (swap! backend f))
+      [IAtom
+       (swap [_ f] (swap! backend f))
        (swap [_ f arg] (swap! backend f arg))
        (swap [_ f arg1 arg2] (swap! backend f arg1 arg2))
        (swap [_ f arg1 arg2 more] (swap! backend f arg1 arg2 more))
        (compareAndSet [_ oldv newv] (compare-and-set! backend oldv newv))
-       (reset [this new-value]
-              (reset! backend new-value))])
+       (reset [this new-value] (reset! backend new-value))])
 
   #?@(:cljs
       [IEquiv
@@ -47,21 +50,32 @@
 
   IDeref
   (deref [this]
-    ((fsafe *tracker*) this)
+    ((fsafe *tracker*) :deref this)
     (.deref backend))
 
   #?(:clj IRef :cljs IWatchable)
   (#?(:clj addWatch :cljs -add-watch) [this watch-key watch-fn]
-    (add-watch backend watch-key
-               (fn [key ref old-value new-value]
-                 (watch-fn key this old-value new-value)))
-    this)
+    (locking this
+      (swap! watches assoc watch-key watch-fn)
+      (add-watch backend watch-key
+                 (fn [key _ref old-value new-value]
+                   (watch-fn key this old-value new-value)))
+      this))
   (#?(:clj removeWatch :cljs -remove-watch) [this watch-key]
-    (remove-watch backend watch-key)
-    this)
+    (locking this
+      (swap! watches dissoc watch-key)
+      (remove-watch backend watch-key)
+      this))
+
+  IWatchWatchers
+  (add-watcher-watch [this watch-key watch-fn]
+    (add-watch watches watch-key (fn [key _ref old-value new-value]
+                                   (watch-fn key this old-value new-value))))
+  (remove-watcher-watch [this watch-key]
+    (remove-watch watches watch-key))
 
   #?(:clj IObj :cljs IWithMeta)
-  (#?(:clj withMeta :cljs -with-meta) [_ meta-map] (Atom. backend meta-map))
+  (#?(:clj withMeta :cljs -with-meta) [_ meta-map] (Atom. backend watches meta-map))
 
   IMeta
   (#?(:clj meta :cljs -meta) [_]
@@ -79,8 +93,8 @@
 
 (defn atom
   [state]
-  (let [a (Atom. (clojure.core/atom state) nil)]
-    ((fsafe *tracker*) a)
+  (let [a (Atom. (clojure.core/atom state) (clojure.core/atom {}) nil)]
+    ((fsafe *tracker*) :create a)
     a))
 
 #?(:clj
@@ -88,6 +102,11 @@
      [tracker-fn & body]
      `(binding [*tracker* ~tracker-fn]
         ~@body)))
+
+(defn watches
+  "Returns list of keys corresponding to watchers of the reference."
+  [a]
+  @(.watches a))
 
 ;;; Implementation
 

@@ -11,53 +11,51 @@
 (ns signum.subs
   (:require [signum.atom :as s]
             [signum.interceptors :refer [->interceptor] :as interceptors]
-            [utilis.fn :refer [fsafe debounce]]
+            [utilis.fn :refer [fsafe]]
+            [utilis.map :refer [compact]]
+            [utilis.timer :as ut]
             [clojure.set :as set])
   #?(:clj (:import [clojure.lang ExceptionInfo])))
 
-(def ^:dynamic *context* {})
+(defonce ^:dynamic *context* {})
+(defonce ^:dynamic *current-sub-fn* nil)
 
-(declare handlers signals reset-subscriptions! retain! release! signal-interceptor)
+(declare handlers reset-subscriptions! release! signal-interceptor)
 
 (defn reg-sub
   [query-id & args]
   (when-not (fn? (last args))
-    (throw (ex-info "Computation fn must be provided" {:query-id query-id
-                                                       :args args})))
-  (let [interceptors (when (vector? (first args)) (first args))]
+    (throw (ex-info "Computation fn must be provided" {:query-id query-id :args args})))
+  (let [interceptors (when (vector? (first args)) (first args))
+        fns (filter fn? args)
+        [init-fn dispose-fn computation-fn] (case (count fns)
+                                              3 fns
+                                              2 [(first fns) nil (last fns)]
+                                              1 [nil nil (last fns)])]
     (swap! handlers assoc query-id
-           {:init-fn (let [init-fn (last (butlast args))]
-                       (when (fn? init-fn) init-fn))
-            :computation-fn (last args)
-            :queue (vec (concat interceptors [signal-interceptor]))
-            :stack []}))
+           (compact
+            {:init-fn init-fn
+             :dispose-fn dispose-fn
+             :computation-fn computation-fn
+             :queue (vec (concat interceptors [signal-interceptor]))
+             :stack []})))
   (reset-subscriptions! query-id)
   query-id)
 
 (defn subscribe
   [[query-id & _ :as query-v]]
-  (locking signals
-    (if-let [handler-context (get @handlers query-id)]
-      (-> (merge *context* handler-context)
-          (assoc-in [:coeffects :query-v] query-v)
-          interceptors/run
-          (get-in [:effects :signal]))
-      (throw (ex-info (str "Invalid query " (pr-str query-v)) {:query query-v})))))
-
-(defn dispose
-  [signal]
-  (locking signals
-    (release! signal)))
-
-(defn track-signal
-  [signal & {:keys [on-dispose]}]
-  (when on-dispose
-    (locking signals
-      (swap! signals assoc signal {:count 0
-                                   :dispose-fn (fn []
-                                                 (swap! signals dissoc signal)
-                                                 (on-dispose))})))
-  signal)
+  (when (= ::init-fn *current-sub-fn*)
+    (throw (ex-info "subscribe is not supported within the init-fn of a sub"
+                    {:query-v query-v})))
+  (when (= ::dispose-fn *current-sub-fn*)
+    (throw (ex-info "subscribe is not supported within the dispose-fn of a sub"
+                    {:query-v query-v})))
+  (if-let [handler-context (get @handlers query-id)]
+    (-> (merge *context* handler-context)
+        (assoc-in [:coeffects :query-v] query-v)
+        interceptors/run
+        (get-in [:effects :signal]))
+    (throw (ex-info (str "Invalid query " (pr-str query-v)) {:query query-v}))))
 
 (defn interceptors
   [query-id]
@@ -65,84 +63,82 @@
 
 ;;; Private
 
-(defonce ^:private handlers (atom {}))
-(defonce ^:private signals (atom {}))
-(defonce ^:private subscriptions (atom {}))
-(def ^:private ^:dynamic *implicit-subs* nil)
-
-(defn- retain!
-  [signal]
-  (swap! signals update-in [signal :count] (fsafe inc))
-  signal)
-
-(defn- release!
-  [signal]
-  (when-let [registration (get @signals signal)]
-    (if (= 1 (:count registration))
-      (when-let [dispose-fn (:dispose-fn registration)]
-        (dispose-fn))
-      (swap! signals update-in [signal :count] (fsafe dec))))
-  nil)
+(defonce ^:private handlers (atom {}))      ; key: query-id
+(defonce ^:private signals (atom {}))       ; key: query-v
+(defonce ^:private subscriptions (atom {})) ; key: output-signal
 
 (defn- create-subscription!
-  [[query-id & _ :as query-v] output-signal]
-  (let [{:keys [init-fn computation-fn]} (get @handlers query-id)
-        init-watched (atom #{})
-        compute-watched (atom #{})
-        subscribe (fn [previously-watched watched reaction-fn a]
-                    (when-not (or (contains? previously-watched a)
-                                  (contains? @watched a))
-                      (retain! a)
-                      (let [reaction-fn (debounce reaction-fn 200)]
-                        (add-watch a (str query-v) (fn [_ _ old-value new-value]
-                                                     (when (not= old-value new-value)
-                                                       (reaction-fn)))))
-                      (swap! watched conj a)))
-        dispose (fn [watched]
-                  (doseq [watch watched]
-                    (remove-watch watch (str query-v))
-                    (release! watch)))
-        init-context (atom ::not-initialized)
+  [output-signal]
+  (let [query-v (:query-v (meta output-signal))
+        handlers (get @handlers (first query-v))
+        {:keys [init-fn computation-fn]} handlers
+        init-context (when init-fn (binding [*current-sub-fn* ::init-fn] (init-fn query-v)))
+        input-signals (atom #{})
         run-reaction (fn run-reaction []
-                       (try
-                         (when-not (and init-fn (= ::not-initialized @init-context))
-                           (let [watched (atom #{})]
-                             (binding [*implicit-subs* true]
-                               (s/with-tracking (partial subscribe @compute-watched watched run-reaction)
-                                 (dispose (set/difference @compute-watched @watched))
-                                 (reset! compute-watched @watched)
-                                 (reset! output-signal (if init-fn
-                                                         (computation-fn @init-context query-v)
-                                                         (computation-fn query-v)))))))
-                         (catch Exception e
-                           (println ":signum.subs/subscribe" (pr-str query-v) "error")
-                           (throw e))))]
-    (swap! subscriptions assoc query-v {:signal output-signal :context *context*})
-    (when init-fn
-      (s/with-tracking (partial subscribe @init-watched init-watched run-reaction)
-        (reset! init-context (init-fn query-v))))
+                       (binding [*current-sub-fn* ::compute-fn]
+                         (try
+                           (let [derefed (atom #{})]
+                             (s/with-tracking (fn [reason a]
+                                                (when (= :deref reason)
+                                                  (when-not (or (get @input-signals a)
+                                                                (get @derefed a)))
+                                                  (add-watch a (str query-v)
+                                                             (fn [_ _ old-value new-value]
+                                                               (when (not= old-value new-value)
+                                                                 (run-reaction))))
+                                                  (swap! derefed conj a)))
+                               (reset! output-signal (if init-context
+                                                       (computation-fn init-context query-v)
+                                                       (computation-fn query-v))))
+                             (doseq [w (set/difference @input-signals @derefed)]
+                               (remove-watch w (str query-v)))
+                             (reset! input-signals @derefed))
+                           (catch Exception e
+                             (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)))))]
     (run-reaction)
-    (track-signal output-signal
-                  :on-dispose (fn []
-                                (dispose (concat @init-watched @compute-watched))
-                                (swap! subscriptions dissoc query-v)))))
+    (swap! subscriptions assoc output-signal (compact
+                                              {:query-v query-v
+                                               :context *context*
+                                               :handlers handlers
+                                               :init-context init-context
+                                               :input-signals input-signals}))))
+
+(defn- dispose-subscription!
+  [output-signal]
+  (when-let [subscription (get @subscriptions output-signal)]
+    (let [{:keys [query-v init-context handlers input-signals]} subscription]
+      (doseq [w @input-signals] (remove-watch w (str query-v)))
+      (when-let [dispose-fn (:dispose-fn handlers)]
+        (binding [*current-sub-fn* ::dispose-fn]
+          (dispose-fn init-context query-v)))
+      (swap! subscriptions dissoc output-signal))))
 
 (defn- reset-subscriptions!
   [query-id]
-  (locking signals
-    (doseq [[query-v {:keys [signal context]}] (filter (fn [[query-v {:keys [signal context]}]]
-                                                         (= query-id (first query-v))) @subscriptions)]
+  (doseq [[query-v output-signal] (filter (fn [[query-v _]] (= query-id (first query-v))) @signals)]
+    (let [context (get-in @subscriptions [output-signal :context])]
+      (dispose-subscription! output-signal)
       (binding [*context* context]
-        (let [{:keys [count dispose-fn]} (get @signals signal)]
-          (when dispose-fn (dispose-fn))
-          (create-subscription! query-v signal)
-          (swap! signals assoc-in [signal :count] count))))))
+        (create-subscription! output-signal)))))
+
+(defn- handle-watchers
+  [_ output-signal _ watchers]
+  (if (zero? (count watchers))
+    (do
+      (swap! signals dissoc (:query-v (meta output-signal)))
+      (dispose-subscription! output-signal))
+    (locking subscriptions
+      (when-not (get @subscriptions output-signal)
+        (create-subscription! output-signal)))))
 
 (defn- signal
-  [[query-id & _ :as query-v]]
-  (cond-> (or (get-in @subscriptions [query-v :signal])
-              (create-subscription! query-v (s/atom nil)))
-    (not *implicit-subs*) retain!))
+  [query-v]
+  (locking signals
+    (or (get @signals query-v)
+        (let [output-signal (with-meta (s/atom nil) {:query-v query-v})]
+          (s/add-watcher-watch output-signal (str query-v) handle-watchers)
+          (swap! signals assoc query-v output-signal)
+          output-signal))))
 
 (def ^:private signal-interceptor
   (->interceptor
