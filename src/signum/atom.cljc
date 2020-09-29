@@ -51,7 +51,7 @@
   IDeref
   (deref [this]
     ((fsafe *tracker*) :deref this)
-    (.deref backend))
+    (clojure.core/deref backend))
 
   #?(:clj IRef :cljs IWatchable)
   (#?(:clj addWatch :cljs -add-watch) [this watch-key watch-fn]
