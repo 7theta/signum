@@ -1,15 +1,14 @@
 ;;   Copyright (c) 7theta. All rights reserved.
 ;;   The use and distribution terms for this software are covered by the
-;;   Eclipse Public License 1.0 (http://www.eclipse.org/legal/epl-v10.html)
-;;   which can be found in the LICENSE file at the root of this
-;;   distribution.
+;;   MIT License (https://opensource.org/licenses/MIT) which can also be
+;;   found in the LICENSE file at the root of this distribution.
 ;;
 ;;   By using this software in any fashion, you are agreeing to be bound by
 ;;   the terms of this license.
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns signum.subs
-  (:require [signum.atom :as s]
+  (:require [signum.signal :as s]
             [signum.interceptors :refer [->interceptor] :as interceptors]
             [utilis.fn :refer [fsafe]]
             [utilis.map :refer [compact]]
@@ -78,18 +77,20 @@
                        (binding [*current-sub-fn* ::compute-fn]
                          (try
                            (let [derefed (atom #{})]
-                             (s/with-tracking (fn [reason a]
+                             (s/with-tracking (fn [reason s]
                                                 (when (= :deref reason)
-                                                  (when-not (or (get @input-signals a)
-                                                                (get @derefed a)))
-                                                  (add-watch a (str query-v)
-                                                             (fn [_ _ old-value new-value]
-                                                               (when (not= old-value new-value)
-                                                                 (run-reaction))))
-                                                  (swap! derefed conj a)))
-                               (reset! output-signal (if init-context
-                                                       (computation-fn init-context query-v)
-                                                       (computation-fn query-v))))
+                                                  (when-not (or (get @input-signals s)
+                                                                (get @derefed s))
+                                                    (add-watch s (str query-v)
+                                                               (fn [_ _ old-value new-value]
+                                                                 (when (not= old-value new-value)
+                                                                   (run-reaction)))))
+                                                  (swap! derefed conj s)))
+                               (s/alter! output-signal
+                                         (constantly
+                                          (if init-context
+                                            (computation-fn init-context query-v)
+                                            (computation-fn query-v)))))
                              (doseq [w (set/difference @input-signals @derefed)]
                                (remove-watch w (str query-v)))
                              (reset! input-signals @derefed))
@@ -135,7 +136,7 @@
   [query-v]
   (locking signals
     (or (get @signals query-v)
-        (let [output-signal (with-meta (s/atom nil) {:query-v query-v})]
+        (let [output-signal (with-meta (s/signal nil) {:query-v query-v})]
           (s/add-watcher-watch output-signal (str query-v) handle-watchers)
           (swap! signals assoc query-v output-signal)
           output-signal))))
