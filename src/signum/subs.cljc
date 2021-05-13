@@ -60,6 +60,10 @@
   [query-id]
   (get-in @handlers [query-id :queue]))
 
+(defn sub?
+  [id]
+  (contains? @handlers id))
+
 ;;; Private
 
 (defonce ^:private handlers (atom {}))      ; key: query-id

@@ -21,5 +21,5 @@
   [context]
   (doseq [[effect-id effect-args :as effect] (:effects context)]
     (if-let [{:keys [handler]} (get @effect-handlers effect-id)]
-      (handler context effect-args)
+      (handler (:coeffects context) effect-args)
       (throw (ex-info (str ":signum.fx Unhandled effect" (pr-str effect)))))))

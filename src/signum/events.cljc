@@ -15,11 +15,14 @@
    id))
 
 (defn dispatch
-  [[id & _ :as query-vec]]
-  (if-let [context (get @event-handlers id)]
-    (interceptors/run (assoc context :event query-vec))
-    (throw (ex-info ":signum.events Unhandled dispatch"
-                    {:query-vec query-vec}))))
+  ([query-vec] (dispatch nil query-vec))
+  ([coeffects [id & _ :as query-vec]]
+   (if-let [handler-context (get @event-handlers id)]
+     (interceptors/run
+       (assoc (update handler-context :coeffects merge coeffects)
+              :event query-vec))
+     (throw (ex-info ":signum.events Unhandled dispatch"
+                     {:query-vec query-vec})))))
 
 (defn event?
   [event-id]
