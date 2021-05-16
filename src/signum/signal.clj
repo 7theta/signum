@@ -28,28 +28,24 @@
 
   IRef
   (addWatch [this watch-key watch-fn]
-    (when (empty? @watches)
-      (add-watch backend :signum/signal
-                 (fn [_key _ref _old-value new-value]
-                   (doseq [{:keys [value-ch]} (vals @watches)]
-                     (>!! value-ch [new-value])))))
     (let [stop-ch (chan)
           value-ch (chan (sliding-buffer 1))]
       (swap! watches assoc watch-key
              {:stop-ch stop-ch
               :value-ch value-ch
               :value-loop (go-loop [old-value @backend]
-                            (let [[[value] channel] (alts! [stop-ch value-ch])]
+                            (let [[[new-value] channel] (alts! [stop-ch value-ch])]
                               (when (not= channel stop-ch)
-                                (watch-fn watch-key this old-value value)
-                                (recur value))))}))
+                                (try
+                                  (watch-fn watch-key this old-value new-value)
+                                  (catch Exception _
+                                    (remove-watch this watch-key)))
+                                (recur new-value))))}))
     this)
   (removeWatch
     [this watch-key]
     (close! (get-in @watches [watch-key :stop-ch]))
     (swap! watches dissoc watch-key)
-    (when (empty? @watches)
-      (remove-watch backend :signum/signal))
     this)
 
   IObj
@@ -68,8 +64,13 @@
     s))
 
 (defn alter!
-  [signal fun & args]
-  (apply send-off (.backend ^Signal signal) fun args)
+  [^Signal signal fun & args]
+  (send-off (.backend signal)
+            (fn [v]
+              (let [new-value (apply fun v args)]
+                (doseq [{:keys [value-ch]} (vals @(.watches signal))]
+                  (>!! value-ch [new-value]))
+                new-value)))
   signal)
 
 (defmacro with-tracking
@@ -77,20 +78,6 @@
   `(binding [*tracker* ~tracker-fn]
      ~@body))
 
-(defn add-watcher-watch
-  [signal watch-key watch-fn]
-  (add-watch (.watches ^Signal signal) watch-key
-             (fn [_key _ref old-value new-value]
-               (watch-fn watch-key signal old-value new-value))))
-
-(defn remove-watcher-watch
-  [signal watch-key]
-  (remove-watch (.watches ^Signal signal) watch-key))
-
-(defn watches
-  "Returns list of keys corresponding to watchers of the signal."
-  [signal]
-  @(.watches ^Signal signal))
 
 ;;; Private
 
@@ -98,6 +85,4 @@
   [signal]
   (ust/format "#<signum/Signal@0x%x: %s>" (hash signal)
               (try (-> signal deref pr-str)
-                   (catch Throwable e
-                     (println "ERROR PRINT" e)
-                     e))))
+                   (catch Throwable e (.getMessge e)))))

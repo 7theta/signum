@@ -137,7 +137,7 @@
   (locking signals
     (or (get @signals query-v)
         (let [output-signal (with-meta (s/signal nil) {:query-v query-v})]
-          (s/add-watcher-watch output-signal (str query-v) handle-watchers)
+          (add-watch (.watchers output-signal) (str query-v) handle-watchers)
           (swap! signals assoc query-v output-signal)
           output-signal))))
 

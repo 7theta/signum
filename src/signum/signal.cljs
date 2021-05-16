@@ -65,20 +65,6 @@
             (catch js/Error e e)))
   signal)
 
-(defn add-watcher-watch
-  [signal watch-key watch-fn]
-  (add-watch (.watches ^Signal signal) watch-key
-             (fn [_key _ref old-value new-value]
-               (watch-fn watch-key signal old-value new-value))))
-
-(defn remove-watcher-watch
-  [signal watch-key]
-  (remove-watch (.watches ^Signal signal) watch-key))
-
-(defn watches
-  "Returns list of keys corresponding to watchers of the signal."
-  [signal]
-  @(.watches ^Signal signal))
 
 ;;; Private
 
@@ -86,4 +72,4 @@
   [signal]
   (ust/format "#<signum/Signal@0x%x: %s>" (hash signal)
               (try (-> signal deref pr-str)
-                   (catch js/Error e e))))
+                   (catch js/Error e (.message e)))))
