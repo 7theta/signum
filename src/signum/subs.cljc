@@ -8,6 +8,7 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns signum.subs
+  (:refer-clojure :exclude [namespace])
   (:require [signum.signal :as s]
             [signum.interceptors :refer [->interceptor] :as interceptors]
             [utilis.fn :refer [fsafe]]
@@ -37,7 +38,8 @@
              :dispose-fn dispose-fn
              :computation-fn computation-fn
              :queue (vec (concat interceptors [signal-interceptor]))
-             :stack []})))
+             :stack []
+             :ns *ns*})))
   (reset-subscriptions! query-id)
   query-id)
 
@@ -63,6 +65,10 @@
 (defn sub?
   [id]
   (contains? @handlers id))
+
+(defn namespace
+  [id]
+  (:ns (get @handlers id)))
 
 ;;; Private
 
@@ -141,7 +147,7 @@
   (locking signals
     (or (get @signals query-v)
         (let [output-signal (with-meta (s/signal nil) {:query-v query-v})]
-          (add-watch (.watchers output-signal) (str query-v) handle-watchers)
+          (add-watch (.watches output-signal) (str query-v) handle-watchers)
           (swap! signals assoc query-v output-signal)
           output-signal))))
 
