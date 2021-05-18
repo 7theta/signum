@@ -104,8 +104,9 @@
                              (doseq [w (set/difference @input-signals @derefed)]
                                (remove-watch w (str query-v)))
                              (reset! input-signals @derefed))
-                           (catch Exception e
-                             (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)))))]
+                           (catch #?(:clj Exception :cljs js/Error) e
+                             #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
+                                :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e))))))]
     (run-reaction)
     (swap! subscriptions assoc output-signal (compact
                                               {:query-v query-v
