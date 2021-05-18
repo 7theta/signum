@@ -8,22 +8,23 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns signum.signal
-  (:require-macros [utilis.exception :refer [throw-if]])
   (:require [utilis.fn :refer [fsafe]]
             [utilis.string :as ust]))
 
 (def ^:dynamic *tracker* nil)
 
-(declare pr-signal)
+(declare pr-signal throwable?)
 
 (deftype Signal [backend watches meta-map]
   IEquiv
   (-equiv [this other] (identical? this other))
 
   IDeref
-  (deref [this]
+  (-deref [this]
     ((fsafe *tracker*) :deref this)
-    (throw-if (clojure.core/deref backend)))
+    (let [value (clojure.core/deref backend)]
+      (cond-> value
+        (throwable? value) throw)))
 
   IWatchable
   (-add-watch
@@ -61,7 +62,8 @@
   [signal fun & args]
   (swap! (.backend signal)
          #(try
-            (apply fun (throw-if %) args)
+            (apply fun (cond-> %
+                         (throwable? %) throw) args)
             (catch js/Error e e)))
   signal)
 
@@ -73,3 +75,7 @@
   (ust/format "#<signum/Signal@0x%x: %s>" (hash signal)
               (try (-> signal deref pr-str)
                    (catch js/Error e (.message e)))))
+
+(defn- throwable?
+  [x]
+  (instance? js/Error x))
