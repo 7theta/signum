@@ -9,6 +9,7 @@
 
 (ns signum.signal
   (:require [utilis.fn :refer [fsafe]]
+            [utilis.js :as j]
             [utilis.string :as ust]))
 
 (def ^:dynamic *tracker* nil)
@@ -60,7 +61,7 @@
 
 (defn alter!
   [signal fun & args]
-  (swap! (.backend signal)
+  (swap! (j/get signal :backend)
          #(try
             (apply fun (cond-> %
                          (throwable? %) throw) args)

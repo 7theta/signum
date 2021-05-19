@@ -14,6 +14,7 @@
             [utilis.fn :refer [fsafe]]
             [utilis.map :refer [compact]]
             [utilis.timer :as ut]
+            #?(:cljs [utilis.js :as j])
             [clojure.set :as set])
   #?(:clj (:import [clojure.lang ExceptionInfo])))
 
@@ -106,7 +107,7 @@
                              (reset! input-signals @derefed))
                            (catch #?(:clj Exception :cljs js/Error) e
                              (locking handlers
-                               #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
+                               #?(:clj (println (str ":signum.subs/subscribe" (pr-str query-v) "error\n" e))
                                   :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e)))))))]
     (run-reaction)
     (swap! subscriptions assoc output-signal (compact
@@ -149,7 +150,8 @@
   (locking signals
     (or (get @signals query-v)
         (let [output-signal (with-meta (s/signal nil) {:query-v query-v})]
-          (add-watch (.watches output-signal) (str query-v) (partial handle-watchers output-signal))
+          (add-watch #?(:clj (.watches output-signal)
+                        :cljs (j/get output-signal :watches)) (str query-v) (partial handle-watchers output-signal))
           (swap! signals assoc query-v output-signal)
           output-signal))))
 
