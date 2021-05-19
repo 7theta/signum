@@ -105,8 +105,9 @@
                                (remove-watch w (str query-v)))
                              (reset! input-signals @derefed))
                            (catch #?(:clj Exception :cljs js/Error) e
-                             #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
-                                :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e))))))]
+                             (locking handlers
+                               #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
+                                  :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e)))))))]
     (run-reaction)
     (swap! subscriptions assoc output-signal (compact
                                               {:query-v query-v
@@ -134,7 +135,7 @@
         (create-subscription! output-signal)))))
 
 (defn- handle-watchers
-  [_ output-signal _ watchers]
+  [output-signal _ _ _ watchers]
   (if (zero? (count watchers))
     (do
       (swap! signals dissoc (:query-v (meta output-signal)))
@@ -148,7 +149,7 @@
   (locking signals
     (or (get @signals query-v)
         (let [output-signal (with-meta (s/signal nil) {:query-v query-v})]
-          (add-watch (.watches output-signal) (str query-v) handle-watchers)
+          (add-watch (.watches output-signal) (str query-v) (partial handle-watchers output-signal))
           (swap! signals assoc query-v output-signal)
           output-signal))))
 

@@ -44,7 +44,7 @@
     this)
   (removeWatch
     [this watch-key]
-    (close! (get-in @watches [watch-key :stop-ch]))
+    ((fsafe close!) (get-in @watches [watch-key :stop-ch]))
     (swap! watches dissoc watch-key)
     this)
 
