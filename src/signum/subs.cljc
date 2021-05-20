@@ -107,7 +107,7 @@
                              (reset! input-signals @derefed))
                            (catch #?(:clj Exception :cljs js/Error) e
                              (locking handlers
-                               #?(:clj (println (str ":signum.subs/subscribe" (pr-str query-v) "error\n" e))
+                               #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
                                   :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e)))))))]
     (run-reaction)
     (swap! subscriptions assoc output-signal (compact
