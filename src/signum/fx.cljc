@@ -8,7 +8,8 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns signum.fx
-  (:require [signum.interceptors :refer [->interceptor]]))
+  (:require [signum.interceptors :refer [->interceptor]]
+            #?(:clj [clojure.tools.logging :as log])))
 
 (defonce effect-handlers (atom {}))
 
@@ -31,5 +32,5 @@
   (doseq [[effect-id effect-args :as effect] (:effects context)]
     (if-let [{:keys [handler]} (get @effect-handlers effect-id)]
       (handler (:coeffects context) effect-args)
-      (locking effect-handlers
-        (println (str ":signum.fx Unhandled effect" effect) {:effect effect})))))
+      #?(:clj (log/warn (str ":signum.fx Unhandled effect" effect) {:effect effect})
+         :cljs (js/console.warn (str ":signum.fx Unhandled effect" effect) (clj->js {:effect effect}))))))
