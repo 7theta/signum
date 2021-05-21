@@ -85,4 +85,4 @@
   [signal]
   (ust/format "#<signum/Signal@0x%x: %s>" (hash signal)
               (try (-> signal deref pr-str)
-                   (catch Throwable e (.getMessge e)))))
+                   (catch Throwable e (.getMessage e)))))

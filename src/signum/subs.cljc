@@ -16,7 +16,8 @@
             [utilis.timer :as ut]
             #?(:cljs [utilis.js :as j])
             [clojure.set :as set])
-  #?(:clj (:import [clojure.lang ExceptionInfo])))
+  #?(:clj (:import [signum.signal Signal]
+                   [clojure.lang ExceptionInfo])))
 
 (defonce ^:dynamic *context* {})
 (defonce ^:dynamic *current-sub-fn* nil)
@@ -150,7 +151,7 @@
   (locking signals
     (or (get @signals query-v)
         (let [output-signal (with-meta (s/signal nil) {:query-v query-v})]
-          (add-watch #?(:clj (.watches output-signal)
+          (add-watch #?(:clj (.watches ^Signal output-signal)
                         :cljs (j/get output-signal :watches)) (str query-v) (partial handle-watchers output-signal))
           (swap! signals assoc query-v output-signal)
           output-signal))))
