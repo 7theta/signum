@@ -80,9 +80,8 @@
 (defonce ^:private subscriptions (atom {})) ; key: output-signal
 
 (defn- create-subscription!
-  [output-signal]
-  (let [query-v (:query-v (meta output-signal))
-        handlers (get @handlers (first query-v))
+  [query-v output-signal]
+  (let [handlers (get @handlers (first query-v))
         {:keys [init-fn computation-fn]} handlers
         init-context (when init-fn (binding [*current-sub-fn* ::init-fn] (init-fn query-v)))
         input-signals (atom #{})
@@ -94,7 +93,7 @@
                                                 (when (= :deref reason)
                                                   (when-not (or (get @input-signals s)
                                                                 (get @derefed s))
-                                                    (add-watch s (str query-v)
+                                                    (add-watch s query-v
                                                                (fn [_ _ old-value new-value]
                                                                  (when (not= old-value new-value)
                                                                    (run-reaction)))))
@@ -105,10 +104,10 @@
                                             (computation-fn init-context query-v)
                                             (computation-fn query-v)))))
                              (doseq [w (set/difference @input-signals @derefed)]
-                               (remove-watch w (str query-v)))
+                               (remove-watch w query-v))
                              (reset! input-signals @derefed))
                            (catch #?(:clj Exception :cljs js/Error) e
-                             #?(:clj (log/error ":signum.subs/subscribe" (pr-str query-v) "error" e)
+                             #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
                                 :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e))))))]
     (run-reaction)
     (swap! subscriptions assoc output-signal (compact
@@ -119,10 +118,10 @@
                                                :input-signals input-signals}))))
 
 (defn- dispose-subscription!
-  [output-signal]
+  [query-v output-signal]
   (when-let [subscription (get @subscriptions output-signal)]
-    (let [{:keys [query-v init-context handlers input-signals]} subscription]
-      (doseq [w @input-signals] (remove-watch w (str query-v)))
+    (let [{:keys [init-context handlers input-signals]} subscription]
+      (doseq [w @input-signals] (remove-watch w query-v))
       (when-let [dispose-fn (:dispose-fn handlers)]
         (binding [*current-sub-fn* ::dispose-fn]
           (dispose-fn init-context query-v)))
@@ -132,27 +131,29 @@
   [query-id]
   (doseq [[query-v output-signal] (filter (fn [[query-v _]] (= query-id (first query-v))) @signals)]
     (let [context (get-in @subscriptions [output-signal :context])]
-      (dispose-subscription! output-signal)
+      (dispose-subscription! query-v output-signal)
       (binding [*context* context]
-        (create-subscription! output-signal)))))
+        (create-subscription! query-v output-signal)))))
 
 (defn- handle-watchers
-  [output-signal _ _ _ watchers]
-  (if (zero? (count watchers))
-    (do
-      (swap! signals dissoc (:query-v (meta output-signal)))
-      (dispose-subscription! output-signal))
-    (locking subscriptions
+  [query-v output-signal _ _ _old-watchers watchers]
+  (locking signals
+    (if (zero? (count watchers))
+      (do
+        (swap! signals dissoc query-v)
+        (dispose-subscription! query-v output-signal))
       (when-not (get @subscriptions output-signal)
-        (create-subscription! output-signal)))))
+        (create-subscription! query-v output-signal)))))
 
 (defn- signal
   [query-v]
   (locking signals
     (or (get @signals query-v)
-        (let [output-signal (with-meta (s/signal nil) {:query-v query-v})]
+        (let [output-signal (s/signal nil)]
           (add-watch #?(:clj (.watches ^Signal output-signal)
-                        :cljs (j/get output-signal :watches)) (str query-v) (partial handle-watchers output-signal))
+                        :cljs (j/get output-signal :watches))
+                     query-v
+                     (partial handle-watchers query-v output-signal))
           (swap! signals assoc query-v output-signal)
           output-signal))))
 

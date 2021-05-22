@@ -9,7 +9,7 @@
 
 (ns signum.signal
   (:require [clojure.core.async :refer [chan sliding-buffer close!
-                                        go-loop >!! alts!]]
+                                        go-loop <! >!! alts!]]
             [utilis.exception :refer [throw-if]]
             [utilis.fn :refer [fsafe]]
             [utilis.string :as ust])
@@ -28,23 +28,20 @@
 
   IRef
   (addWatch [this watch-key watch-fn]
-    (let [stop-ch (chan)
-          value-ch (chan (sliding-buffer 1))]
+    (let [value-ch (chan (sliding-buffer 1))]
       (swap! watches assoc watch-key
-             {:stop-ch stop-ch
-              :value-ch value-ch
+             {:value-ch value-ch
               :value-loop (go-loop [old-value @backend]
-                            (let [[[new-value] channel] (alts! [stop-ch value-ch])]
-                              (when (not= channel stop-ch)
-                                (try
-                                  (watch-fn watch-key this old-value new-value)
-                                  (catch Exception _
-                                    (remove-watch this watch-key)))
-                                (recur new-value))))}))
+                            (when-let [new-value (<! value-ch)]
+                              (try
+                                (watch-fn watch-key this old-value (first new-value))
+                                (catch Exception _
+                                  (remove-watch this watch-key)))
+                              (recur (first new-value))))}))
     this)
   (removeWatch
     [this watch-key]
-    ((fsafe close!) (get-in @watches [watch-key :stop-ch]))
+    ((fsafe close!) (get-in @watches [watch-key :value-ch]))
     (swap! watches dissoc watch-key)
     this)
 
