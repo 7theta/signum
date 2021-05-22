@@ -101,12 +101,13 @@
                                                                     (when (not= old-value new-value)
                                                                       (run-reaction)))))
                                                      (swap! derefed conj s)))
-                                  (if init-context
-                                    (computation-fn init-context query-v)
-                                    (computation-fn query-v)))
-                                (doseq [w (set/difference @input-signals @derefed)]
-                                  (remove-watch w query-v))
-                                (reset! input-signals @derefed)))
+                                  (let [value (if init-context
+                                                (computation-fn init-context query-v)
+                                                (computation-fn query-v))]
+                                    (doseq [w (set/difference @input-signals @derefed)]
+                                      (remove-watch w query-v))
+                                    (reset! input-signals @derefed)
+                                    value))))
                             (catch #?(:clj Exception :cljs js/Error) e
                               #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
                                  :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e)))))))]
