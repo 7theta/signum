@@ -86,29 +86,30 @@
         init-context (when init-fn (binding [*current-sub-fn* ::init-fn] (init-fn query-v)))
         input-signals (atom #{})
         run-reaction (fn run-reaction []
-                       (binding [*current-sub-fn* ::compute-fn]
-                         (try
-                           (let [derefed (atom #{})]
-                             (s/with-tracking (fn [reason s]
-                                                (when (= :deref reason)
-                                                  (when-not (or (get @input-signals s)
-                                                                (get @derefed s))
-                                                    (add-watch s query-v
-                                                               (fn [_ _ old-value new-value]
-                                                                 (when (not= old-value new-value)
-                                                                   (run-reaction)))))
-                                                  (swap! derefed conj s)))
-                               (s/alter! output-signal
-                                         (constantly
-                                          (if init-context
-                                            (computation-fn init-context query-v)
-                                            (computation-fn query-v)))))
-                             (doseq [w (set/difference @input-signals @derefed)]
-                               (remove-watch w query-v))
-                             (reset! input-signals @derefed))
-                           (catch #?(:clj Exception :cljs js/Error) e
-                             #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
-                                :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e))))))]
+                       (s/alter!
+                        output-signal
+                        (fn [_]
+                          (try
+                            (binding [*current-sub-fn* ::compute-fn]
+                              (let [derefed (atom #{})]
+                                (s/with-tracking (fn [reason s]
+                                                   (when (= :deref reason)
+                                                     (when-not (or (get @input-signals s)
+                                                                   (get @derefed s))
+                                                       (add-watch s query-v
+                                                                  (fn [_ _ old-value new-value]
+                                                                    (when (not= old-value new-value)
+                                                                      (run-reaction)))))
+                                                     (swap! derefed conj s)))
+                                  (if init-context
+                                    (computation-fn init-context query-v)
+                                    (computation-fn query-v)))
+                                (doseq [w (set/difference @input-signals @derefed)]
+                                  (remove-watch w query-v))
+                                (reset! input-signals @derefed)))
+                            (catch #?(:clj Exception :cljs js/Error) e
+                              #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
+                                 :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e)))))))]
     (run-reaction)
     (swap! subscriptions assoc output-signal (compact
                                               {:query-v query-v
@@ -129,11 +130,12 @@
 
 (defn- reset-subscriptions!
   [query-id]
-  (doseq [[query-v output-signal] (filter (fn [[query-v _]] (= query-id (first query-v))) @signals)]
-    (let [context (get-in @subscriptions [output-signal :context])]
-      (dispose-subscription! query-v output-signal)
-      (binding [*context* context]
-        (create-subscription! query-v output-signal)))))
+  (locking signals
+    (doseq [[query-v output-signal] (filter (fn [[query-v _]] (= query-id (first query-v))) @signals)]
+      (let [context (get-in @subscriptions [output-signal :context])]
+        (dispose-subscription! query-v output-signal)
+        (binding [*context* context]
+          (create-subscription! query-v output-signal))))))
 
 (defn- handle-watchers
   [query-v output-signal _ _ _old-watchers watchers]
