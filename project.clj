@@ -13,7 +13,6 @@
   :license {:name "MIT License"
             :url "https://opensource.org/licenses/MIT"}
   :dependencies [[org.clojure/clojure "1.10.3"]
-                 [org.clojure/core.async "1.3.618"]
                  [com.7theta/utilis "1.12.2"]]
   :scm {:name "git"
         :url "https://github.com/7theta/signum"})

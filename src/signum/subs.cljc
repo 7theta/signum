@@ -138,7 +138,7 @@
         (binding [*context* context]
           (create-subscription! query-v output-signal))))))
 
-(defn- handle-watchers
+(defn- handle-watches
   [query-v output-signal _ _ _old-watchers watchers]
   (locking signals
     (if (zero? (count watchers))
@@ -156,7 +156,7 @@
           (add-watch #?(:clj (.watches ^Signal output-signal)
                         :cljs (j/get output-signal :watches))
                      query-v
-                     (partial handle-watchers query-v output-signal))
+                     (partial handle-watches query-v output-signal))
           (swap! signals assoc query-v output-signal)
           output-signal))))
 

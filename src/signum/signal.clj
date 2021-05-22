@@ -8,9 +8,7 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns signum.signal
-  (:require [clojure.core.async :refer [chan sliding-buffer close!
-                                        go-loop <! >!! alts!]]
-            [utilis.exception :refer [throw-if]]
+  (:require [utilis.exception :refer [throw-if]]
             [utilis.fn :refer [fsafe]]
             [utilis.string :as ust]
             [clojure.tools.logging :as log])
@@ -29,23 +27,12 @@
 
   IRef
   (addWatch [this watch-key watch-fn]
-    (let [value-ch (chan (sliding-buffer 1))]
-      (swap! watches assoc watch-key
-             {:watch-fn watch-fn
-              :watch-key watch-key
-              ;; :value-ch value-ch
-              #_:value-loop #_(go-loop [old-value @backend]
-                                (when-let [new-value (<! value-ch)]
-                                  (try
-                                    (watch-fn watch-key this old-value (first new-value))
-                                    (catch Exception e
-                                      (log/info "exception in add-watch" watch-key e)
-                                      (remove-watch this watch-key)))
-                                  (recur (first new-value))))}))
+    (swap! watches assoc watch-key
+           {:watch-fn watch-fn
+            :watch-key watch-key})
     this)
   (removeWatch
     [this watch-key]
-    ((fsafe close!) (get-in @watches [watch-key :value-ch]))
     (swap! watches dissoc watch-key)
     this)
 
@@ -66,13 +53,12 @@
 
 (defn alter!
   [^Signal signal fun & args]
-  (send (.backend signal)
-        (fn [v]
-          (let [new-value (apply fun v args)]
-            (doseq [{:keys [value-ch watch-key watch-fn]} (vals @(.watches signal))]
-              (watch-fn watch-key signal v new-value)
-              #_(>!! value-ch [new-value]))
-            new-value)))
+  (send-off (.backend signal)
+            (fn [old-value]
+              (let [new-value (apply fun old-value args)]
+                (doseq [{:keys [watch-key watch-fn]} (vals @(.watches signal))]
+                  (watch-fn watch-key signal old-value new-value))
+                new-value)))
   signal)
 
 (defmacro with-tracking

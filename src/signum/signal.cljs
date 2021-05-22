@@ -14,7 +14,7 @@
 
 (def ^:dynamic *tracker* nil)
 
-(declare pr-signal throwable?)
+(declare pr-signal)
 
 (deftype Signal [backend watches meta-map]
   IEquiv
@@ -24,8 +24,7 @@
   (-deref [this]
     ((fsafe *tracker*) :deref this)
     (let [value (clojure.core/deref backend)]
-      (cond-> value
-        (throwable? value) throw)))
+      (cond-> value (instance? js/Error value) throw)))
 
   IWatchable
   (-add-watch
@@ -62,10 +61,10 @@
 (defn alter!
   [signal fun & args]
   (swap! (j/get signal :backend)
-         #(try
-            (apply fun (cond-> %
-                         (throwable? %) throw) args)
-            (catch js/Error e e)))
+         (fn [old-value]
+           (try
+             (apply fun old-value args)
+             (catch js/Error e e))))
   signal)
 
 
@@ -76,7 +75,3 @@
   (ust/format "#<signum/Signal@0x%x: %s>" (hash signal)
               (try (-> signal deref pr-str)
                    (catch js/Error e (.message e)))))
-
-(defn- throwable?
-  [x]
-  (instance? js/Error x))
