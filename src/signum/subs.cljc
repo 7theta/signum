@@ -21,7 +21,7 @@
                    [clojure.lang ExceptionInfo])))
 
 (defonce ^:dynamic *context* {})
-(defonce ^:dynamic *current-sub-fn* nil)
+(defonce ^:dynamic *current-sub-fn* ::computation-fn)
 
 (declare handlers reset-subscriptions! release! signal-interceptor)
 
@@ -48,12 +48,12 @@
 
 (defn subscribe
   [[query-id & _ :as query-v]]
-  (when (= ::init-fn *current-sub-fn*)
-    (throw (ex-info "subscribe is not supported within the init-fn of a sub"
-                    {:query-v query-v})))
-  (when (= ::dispose-fn *current-sub-fn*)
-    (throw (ex-info "subscribe is not supported within the dispose-fn of a sub"
-                    {:query-v query-v})))
+  #_(when (= ::init-fn *current-sub-fn*)
+      (throw (ex-info "subscribe is not supported within the init-fn of a sub"
+                      {:query-v query-v})))
+  #_(when (= ::dispose-fn *current-sub-fn*)
+      (throw (ex-info "subscribe is not supported within the dispose-fn of a sub"
+                      {:query-v query-v})))
   (if-let [handler-context (get @handlers query-id)]
     (-> (merge *context* handler-context)
         (assoc-in [:coeffects :query-v] query-v)

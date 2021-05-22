@@ -12,7 +12,8 @@
                                         go-loop <! >!! alts!]]
             [utilis.exception :refer [throw-if]]
             [utilis.fn :refer [fsafe]]
-            [utilis.string :as ust])
+            [utilis.string :as ust]
+            [clojure.tools.logging :as log])
   (:import [clojure.lang IRef IDeref IObj IMeta]))
 
 (def ^:dynamic *tracker* nil)
@@ -30,14 +31,17 @@
   (addWatch [this watch-key watch-fn]
     (let [value-ch (chan (sliding-buffer 1))]
       (swap! watches assoc watch-key
-             {:value-ch value-ch
-              :value-loop (go-loop [old-value @backend]
-                            (when-let [new-value (<! value-ch)]
-                              (try
-                                (watch-fn watch-key this old-value (first new-value))
-                                (catch Exception _
-                                  (remove-watch this watch-key)))
-                              (recur (first new-value))))}))
+             {:watch-fn watch-fn
+              :watch-key watch-key
+              ;; :value-ch value-ch
+              #_:value-loop #_(go-loop [old-value @backend]
+                                (when-let [new-value (<! value-ch)]
+                                  (try
+                                    (watch-fn watch-key this old-value (first new-value))
+                                    (catch Exception e
+                                      (log/info "exception in add-watch" watch-key e)
+                                      (remove-watch this watch-key)))
+                                  (recur (first new-value))))}))
     this)
   (removeWatch
     [this watch-key]
@@ -62,12 +66,13 @@
 
 (defn alter!
   [^Signal signal fun & args]
-  (send-off (.backend signal)
-            (fn [v]
-              (let [new-value (apply fun v args)]
-                (doseq [{:keys [value-ch]} (vals @(.watches signal))]
-                  (>!! value-ch [new-value]))
-                new-value)))
+  (send (.backend signal)
+        (fn [v]
+          (let [new-value (apply fun v args)]
+            (doseq [{:keys [value-ch watch-key watch-fn]} (vals @(.watches signal))]
+              (watch-fn watch-key signal v new-value)
+              #_(>!! value-ch [new-value]))
+            new-value)))
   signal)
 
 (defmacro with-tracking
