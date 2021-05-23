@@ -159,7 +159,8 @@
   [query-id]
   (locking signals
     (doseq [[query-v output-signal] (filter (fn [[query-v _]] (= query-id (first query-v))) @signals)]
-      (let [context (get-in @subscriptions [output-signal :context])]
+      (let [output-signal (:signal output-signal)
+            context (get-in @subscriptions [output-signal :context])]
         (dispose-subscription! query-v output-signal)
         (binding [*context* context]
           (create-subscription! query-v output-signal))))))
@@ -175,13 +176,13 @@
 (defn- signal
   [query-v]
   (locking signals
-    (or (get @signals query-v)
+    (or (get-in @signals [query-v :signal])
         (let [output-signal (s/signal nil)]
           (add-watch #?(:clj (.watches ^Signal output-signal)
                         :cljs (j/get output-signal :watches))
                      query-v
                      (partial handle-watches query-v output-signal))
-          (swap! signals assoc query-v output-signal)
+          (swap! signals assoc-in [query-v :signal] output-signal)
           output-signal))))
 
 (def ^:private signal-interceptor
