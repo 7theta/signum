@@ -10,8 +10,7 @@
 (ns signum.signal
   (:require [utilis.exception :refer [throw-if]]
             [utilis.fn :refer [fsafe]]
-            [utilis.string :as ust]
-            [clojure.tools.logging :as log])
+            [utilis.string :as ust])
   (:import [clojure.lang IRef IDeref IObj IMeta]))
 
 (def ^:dynamic *tracker* nil)

@@ -15,7 +15,9 @@
             [utilis.map :refer [compact]]
             [utilis.timer :as ut]
             #?(:cljs [utilis.js :as j])
-            #?(:clj [clojure.tools.logging :as log])
+            #?(:clj [metrics.gauges :as gauges])
+            #?(:clj [metrics.counters :as counters])
+            #?(:clj [metrics.timers :as timers])
             [clojure.set :as set])
   #?(:clj (:import [signum.signal Signal]
                    [clojure.lang ExceptionInfo])))
@@ -28,7 +30,8 @@
 (defn reg-sub
   [query-id & args]
   (when-not (fn? (last args))
-    (throw (ex-info "Computation fn must be provided" {:query-id query-id :args args})))
+    (throw (ex-info "computation-fn must be provided"
+                    {:query-id query-id :args args})))
   (let [interceptors (when (vector? (first args)) (first args))
         fns (filter fn? args)
         [init-fn dispose-fn computation-fn] (case (count fns)
@@ -59,19 +62,26 @@
         (assoc-in [:coeffects :query-v] query-v)
         interceptors/run
         (get-in [:effects :signal]))
-    (throw (ex-info (str "Invalid query " (pr-str query-v)) {:query query-v}))))
+    (throw (ex-info "invalid query" {:query query-v}))))
 
 (defn interceptors
   [query-id]
   (get-in @handlers [query-id :queue]))
 
+(defn namespace
+  [id]
+  (:ns (get @handlers id)))
+
+(declare signals)
+
 (defn sub?
   [id]
   (contains? @handlers id))
 
-(defn namespace
-  [id]
-  (:ns (get @handlers id)))
+(defn subs
+  []
+  (keys @signals))
+
 
 ;;; Private
 
@@ -79,9 +89,15 @@
 (defonce ^:private signals (atom {}))       ; key: query-v
 (defonce ^:private subscriptions (atom {})) ; key: output-signal
 
+(gauges/gauge-fn ["signum" "subs" "registered"] #(count @handlers))
+(gauges/gauge-fn ["signum" "subs" "subscribed"] #(count @signals))
+(gauges/gauge-fn ["signum" "subs" "active"] #(count @subscriptions))
+
 (defn- create-subscription!
   [query-v output-signal]
-  (let [handlers (get @handlers (first query-v))
+  (let [#?@(:clj [compute-fn-counter (counters/counter ["signum.subs/compute-fn" "counter" (str query-v)])
+                  compute-fn-timer (timers/timer ["signum.subs/compute-fn" "timer" (str query-v)])])
+        handlers (get @handlers (first query-v))
         {:keys [init-fn computation-fn]} handlers
         init-context (when init-fn (binding [*current-sub-fn* ::init-fn] (init-fn query-v)))
         input-signals (atom #{})
@@ -89,29 +105,35 @@
                        (s/alter!
                         output-signal
                         (fn [_]
-                          (try
-                            (binding [*current-sub-fn* ::compute-fn]
-                              (let [derefed (atom #{})]
-                                (s/with-tracking (fn [reason s]
-                                                   (when (= :deref reason)
-                                                     (when-not (or (get @input-signals s)
-                                                                   (get @derefed s))
-                                                       (add-watch s query-v
-                                                                  (fn [_ _ old-value new-value]
-                                                                    (when (not= old-value new-value)
-                                                                      (run-reaction)))))
-                                                     (swap! derefed conj s)))
-                                  (let [value (if init-context
-                                                (computation-fn init-context query-v)
-                                                (computation-fn query-v))]
-                                    (doseq [w (set/difference @input-signals @derefed)]
-                                      (remove-watch w query-v))
-                                    (reset! input-signals @derefed)
-                                    value))))
-                            (catch #?(:clj Exception :cljs js/Error) e
-                              #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
-                                 :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e)))))))]
+                          (#?@(:clj [timers/time! compute-fn-timer]
+                               :cljs [identity])
+                           (try
+                             (binding [*current-sub-fn* ::compute-fn]
+                               (let [derefed (atom #{})]
+                                 (s/with-tracking
+                                   (fn [reason s]
+                                     (when (= :deref reason)
+                                       (when-not (or (get @input-signals s)
+                                                     (get @derefed s))
+                                         (add-watch s query-v
+                                                    (fn [_ _ old-value new-value]
+                                                      (when (not= old-value new-value)
+                                                        (run-reaction)))))
+                                       (swap! derefed conj s)))
+                                   (let [value (if init-context
+                                                 (computation-fn init-context query-v)
+                                                 (computation-fn query-v))]
+                                     (doseq [w (set/difference @input-signals @derefed)]
+                                       (remove-watch w query-v))
+                                     (reset! input-signals @derefed)
+                                     #?(:clj (counters/inc! compute-fn-counter))
+                                     value))))
+                             (catch #?(:clj Exception :cljs js/Error) e
+                               #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
+                                  :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e))))))))]
     (run-reaction)
+    (swap! signals update query-v merge {:counter compute-fn-counter
+                                         :timer compute-fn-timer})
     (swap! subscriptions assoc output-signal (compact
                                               {:query-v query-v
                                                :context *context*
@@ -142,22 +164,20 @@
   [query-v output-signal _ _ _old-watchers watchers]
   (locking signals
     (if (zero? (count watchers))
-      (do
-        (swap! signals dissoc query-v)
-        (dispose-subscription! query-v output-signal))
+      (dispose-subscription! query-v output-signal)
       (when-not (get @subscriptions output-signal)
         (create-subscription! query-v output-signal)))))
 
 (defn- signal
   [query-v]
   (locking signals
-    (or (get @signals query-v)
+    (or (get-in @signals [query-v :signal])
         (let [output-signal (s/signal nil)]
           (add-watch #?(:clj (.watches ^Signal output-signal)
                         :cljs (j/get output-signal :watches))
                      query-v
                      (partial handle-watches query-v output-signal))
-          (swap! signals assoc query-v output-signal)
+          (swap! signals assoc-in [query-v :signal] output-signal)
           output-signal))))
 
 (def ^:private signal-interceptor
