@@ -88,10 +88,12 @@
 (defonce ^:private handlers (atom {}))      ; key: query-id
 (defonce ^:private signals (atom {}))       ; key: query-v
 (defonce ^:private subscriptions (atom {})) ; key: output-signal
+(defonce ^:private running (atom #{}))
 
-(gauges/gauge-fn ["signum" "subs" "registered"] #(count @handlers))
-(gauges/gauge-fn ["signum" "subs" "subscribed"] #(count @signals))
-(gauges/gauge-fn ["signum" "subs" "active"] #(count @subscriptions))
+#?(:clj (gauges/gauge-fn ["signum" "subs" "registered"] #(count @handlers)))
+#?(:clj (gauges/gauge-fn ["signum" "subs" "subscribed"] #(count @signals)))
+#?(:clj (gauges/gauge-fn ["signum" "subs" "active"] #(count @subscriptions)))
+#?(:clj (gauges/gauge-fn ["signum" "subs" "running"] #(deref running)))
 
 (defn- create-subscription!
   [query-v output-signal]
@@ -105,7 +107,8 @@
                        (s/alter!
                         output-signal
                         (fn [_]
-                          (#?@(:clj [timers/time! compute-fn-timer]
+                          (#?@(:clj [timers/time! compute-fn-timer
+                                     (swap! running conj query-v)]
                                :cljs [identity])
                            (try
                              (binding [*current-sub-fn* ::compute-fn]
@@ -126,7 +129,8 @@
                                      (doseq [w (set/difference @input-signals @derefed)]
                                        (remove-watch w query-v))
                                      (reset! input-signals @derefed)
-                                     #?(:clj (counters/inc! compute-fn-counter))
+                                     #?@(:clj [(counters/inc! compute-fn-counter)
+                                               (swap! running disj query-v)])
                                      value))))
                              (catch #?(:clj Exception :cljs js/Error) e
                                #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)

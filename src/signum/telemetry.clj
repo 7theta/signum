@@ -21,7 +21,8 @@
              (assoc query-v->metrics query-v (metrics query-v)))
            {:subs {:registered (gauges/value (gauges/gauge ["signum" "subs" "registered"]))
                    :subscribed (gauges/value (gauges/gauge ["signum" "subs" "subscribed"]))
-                   :active (gauges/value (gauges/gauge ["signum" "subs" "active"]))}}
+                   :active (gauges/value (gauges/gauge ["signum" "subs" "active"]))
+                   :running (gauges/value (gauges/gauge ["signum" "subs" "running"]))}}
            (subs/subs)))
   ([query-v]
    {:count (counters/value (counters/counter ["signum.subs/compute-fn" "counter" (str query-v)]))
