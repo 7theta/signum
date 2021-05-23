@@ -136,8 +136,8 @@
                                #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
                                   :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e))))))))]
     (run-reaction)
-    (swap! signals update query-v merge {:counter compute-fn-counter
-                                         :timer compute-fn-timer})
+    #?(:clj (swap! signals update query-v merge {:counter compute-fn-counter
+                                                 :timer compute-fn-timer}))
     (swap! subscriptions assoc output-signal (compact
                                               {:query-v query-v
                                                :context *context*
