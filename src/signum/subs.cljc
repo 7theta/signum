@@ -175,13 +175,13 @@
 (defn- signal
   [query-v]
   (locking signals
-    (or (get-in @signals [query-v :signal])
+    (or (get @signals query-v)
         (let [output-signal (s/signal nil)]
           (add-watch #?(:clj (.watches ^Signal output-signal)
                         :cljs (j/get output-signal :watches))
                      query-v
                      (partial handle-watches query-v output-signal))
-          (swap! signals assoc-in [query-v :signal] output-signal)
+          (swap! signals assoc query-v output-signal)
           output-signal))))
 
 (def ^:private signal-interceptor
