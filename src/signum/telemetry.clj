@@ -8,7 +8,8 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns signum.telemetry
-  (:require [signum.subs :as subs]
+  (:require [signum.events :as events]
+            [signum.subs :as subs]
             [metrics.core :as metrics]
             [metrics.gauges :as gauges]
             [metrics.counters :as counters]
@@ -17,13 +18,22 @@
 
 (defn metrics
   ([]
-   (reduce (fn [query-v->metrics query-v]
-             (assoc query-v->metrics query-v (metrics query-v)))
-           {:subs {:registered (gauges/value (gauges/gauge ["signum" "subs" "registered"]))
-                   :subscribed (gauges/value (gauges/gauge ["signum" "subs" "subscribed"]))
-                   :active (gauges/value (gauges/gauge ["signum" "subs" "active"]))
-                   :running (gauges/value (gauges/gauge ["signum" "subs" "running"]))}}
-           (subs/subs)))
-  ([query-v]
-   {:count (counters/value (counters/counter ["signum.subs/compute-fn" "counter" (str query-v)]))
-    :timings (timers/percentiles (timers/timer ["signum.subs/compute-fn" "timer" (str query-v)]))}))
+   (merge
+    (reduce (fn [query-v->metrics query-v]
+              (assoc-in query-v->metrics [:events query-v] (metrics query-v)))
+            {:events {:registered (gauges/value (gauges/gauge ["signum" "events" "registered"]))
+                      :running (gauges/value (gauges/gauge ["signum" "events" "running"]))}}
+            (events/events))
+    (reduce (fn [query-v->metrics query-v]
+              (assoc-in query-v->metrics [:subs query-v] (metrics query-v)))
+            {:subs {:registered (gauges/value (gauges/gauge ["signum" "subs" "registered"]))
+                    :subscribed (gauges/value (gauges/gauge ["signum" "subs" "subscribed"]))
+                    :active (gauges/value (gauges/gauge ["signum" "subs" "active"]))
+                    :running (gauges/value (gauges/gauge ["signum" "subs" "running"]))}}
+            (subs/subs))))
+  ([query]
+   (if (keyword query)
+     {:count (counters/value (counters/counter ["signum.events/handler-fn" "counter" (str query)]))
+      :timings (timers/percentiles (timers/timer ["signum.events/handler-fn" "timer" (str query)]))}
+     {:count (counters/value (counters/counter ["signum.subs/compute-fn" "counter" (str query)]))
+      :timings (timers/percentiles (timers/timer ["signum.subs/compute-fn" "timer" (str query)]))})))
