@@ -8,7 +8,7 @@
 ;;   You must not remove this notice, or any others, from this software.
 
 (ns signum.subs
-  (:refer-clojure :exclude [namespace])
+  (:refer-clojure :exclude [namespace subs])
   (:require [signum.signal :as s]
             [signum.interceptors :refer [->interceptor] :as interceptors]
             [utilis.fn :refer [fsafe]]
