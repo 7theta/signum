@@ -53,12 +53,12 @@
 
 (defn alter!
   [^Signal signal fun & args]
-  (send-off (.backend signal)
-            (fn [old-value]
-              (let [new-value (apply fun old-value args)]
-                (doseq [{:keys [watch-key watch-fn]} (vals @(.watches signal))]
-                  (watch-fn watch-key signal old-value new-value))
-                new-value)))
+  (send (.backend signal)
+        (fn [old-value]
+          (let [new-value (apply fun old-value args)]
+            (doseq [{:keys [watch-key watch-fn]} (vals @(.watches signal))]
+              (watch-fn watch-key signal old-value new-value))
+            new-value)))
   signal)
 
 (defmacro with-tracking
