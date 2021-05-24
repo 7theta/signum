@@ -9,7 +9,8 @@
 
 (ns signum.subs
   (:refer-clojure :exclude [namespace subs])
-  (:require [signum.signal :as s]
+  #?(:cljs (:require-macros [signum.signal :refer [with-tracking] :as s]))
+  (:require [signum.signal :refer [with-tracking] :as s]
             [signum.interceptors :refer [->interceptor] :as interceptors]
             [utilis.fn :refer [fsafe]]
             [utilis.map :refer [compact]]
@@ -113,7 +114,7 @@
                            (try
                              (binding [*current-sub-fn* ::compute-fn]
                                (let [derefed (atom #{})]
-                                 (s/with-tracking
+                                 (with-tracking
                                    (fn [reason s]
                                      (when (= :deref reason)
                                        (when-not (or (get @input-signals s)
