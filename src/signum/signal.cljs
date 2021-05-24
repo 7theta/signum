@@ -16,6 +16,15 @@
 
 (declare pr-signal)
 
+(defprotocol IWatchWatchers
+  (add-watcher-watch [signal key watch-fn])
+  (remove-watcher-watch [signal key]))
+
+(defprotocol IAlter
+  (-alter! [signal fun args]))
+
+(defn alter! [signal fun & args] (-alter! signal fun args))
+
 (deftype Signal [backend watches meta-map]
   IEquiv
   (-equiv [this other] (identical? this other))
@@ -25,6 +34,19 @@
     ((fsafe *tracker*) :deref this)
     (let [value (clojure.core/deref backend)]
       (cond-> value (instance? js/Error value) throw)))
+
+  IAlter
+  (-alter!
+    [signal fun args]
+    (swap! backend
+           (fn [old-value]
+             (try
+               (apply fun old-value args)
+               (catch js/Error e e))))
+    signal)
+
+
+
 
   IWatchable
   (-add-watch
@@ -50,22 +72,20 @@
   (-hash [this] (goog/getUid this))
 
   IPrintWithWriter
-  (-pr-writer [this w opts] (write-all w (pr-signal this))))
+  (-pr-writer [this w opts] (write-all w (pr-signal this)))
+
+  IWatchWatchers
+  (add-watcher-watch [this watch-key watch-fn]
+    (add-watch watches watch-key (fn [key _ref old-value new-value]
+                                   (watch-fn key this old-value new-value))))
+  (remove-watcher-watch [this watch-key]
+    (remove-watch watches watch-key)))
 
 (defn signal
   [state]
   (let [s (Signal. (atom state) (atom {}) nil)]
     ((fsafe *tracker*) :create s)
     s))
-
-(defn alter!
-  [signal fun & args]
-  (swap! (j/get signal :backend)
-         (fn [old-value]
-           (try
-             (apply fun old-value args)
-             (catch js/Error e e))))
-  signal)
 
 
 ;;; Private

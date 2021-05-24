@@ -179,10 +179,9 @@
   (locking signals
     (or (get-in @signals [query-v :signal])
         (let [output-signal (s/signal nil)]
-          (add-watch #?(:clj (.watches ^Signal output-signal)
-                        :cljs (j/get output-signal :watches))
-                     query-v
-                     (partial handle-watches query-v output-signal))
+          (s/add-watcher-watch output-signal
+                               query-v
+                               (partial handle-watches query-v output-signal))
           (swap! signals assoc-in [query-v :signal] output-signal)
           output-signal))))
 
