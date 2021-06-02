@@ -4,7 +4,7 @@
 [![GitHub license](https://img.shields.io/github/license/7theta/signum.svg)](LICENSE)
 [![Dependencies Status](https://jarkeeper.com/7theta/signum/status.svg)](https://jarkeeper.com/7theta/signum)
 
-A Signal is a value that changes over time and is implemented by `signum.atom/atom`
+A Signal is a value that changes over time and is implemented by `signum.signal/signal`
 
 A Reaction is a mechanism for wrapping computation around one or
 more Signals, that runs every time one of the referenced Signals
@@ -23,7 +23,7 @@ to manage the lifecycle of external Signals as well as wrap the input
 Signals with computation.
 
 Signals can either be obtained from other Subscriptions or via
-de-referencing externally allocated `signum.atom/atom`s from the
+de-referencing externally allocated `signum.signal/signal`s from the
 Reaction graph. 
 
 A Subscription is declared via `signum.subs/reg-sub`. `reg-sub` is
@@ -35,16 +35,16 @@ The following example declares a basic Reaction graph.
 
 ```clojure
 
-(require '[signum.atom :as s])
+(require '[signum.signal :as s])
 (require '[signum.subs :refer [reg-sub subscribe]])
 
 (reg-sub
  :api.example/my-counter
  (fn [query-v]
-   (let [counter (s/atom 0)
+   (let [counter (s/signal 0)
          counter-loop (future
                         (loop []
-                          (swap! counter inc)
+                          (s/alter! counter inc)
                           (Thread/sleep 1000)
                           (recur)))]
      {:counter counter
@@ -81,8 +81,8 @@ The `subscribe` function is used within
 `:api.example/auto-increment-string` to reference the Signal for
 `:api.example/my-counter`.
 
-Any `signum.atom/atom` dereferenced within a computation function will
-cause the computation function to automatically run if the atom changes.
+Any `signum.signal/signal` dereferenced within a computation function will
+cause the computation function to automatically run if the signal changes.
 
 ### Implementation details
 
@@ -95,7 +95,7 @@ graph gets instantiated. When the last `remove-watch` is called, the
 upstream Subscription graph is disposed.
 
 If an `add-watch` is never called, the Subscription graph will never
-be instantiated and the value will always be nil. This will also cause
+be instantiated and the value will always be `nil`. This will also cause
 the output-signal to be retained forever.
 
 This is only important to keep track of if you're implementing a
@@ -106,6 +106,6 @@ library on top of Signum. No special handling is required if using
 
 Copyright © 2020 7theta
 
-Distributed under the Eclipse Public License.
+Distributed under the MIT License.
 
 
