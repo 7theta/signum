@@ -105,6 +105,7 @@
         {:keys [init-fn computation-fn]} handlers
         init-context (when init-fn (binding [*current-sub-fn* ::init-fn] (init-fn query-v)))
         input-signals (atom #{})
+        runs (atom 0)
         run-reaction (fn run-reaction []
                        (s/alter!
                         output-signal
@@ -122,7 +123,10 @@
                                                      (get @derefed s))
                                          (add-watch s query-v
                                                     (fn [_ _ old-value new-value]
-                                                      (run-reaction))))
+                                                      (when (or (zero? @runs)
+                                                                (not= old-value new-value))
+                                                        (swap! runs inc)
+                                                        (run-reaction)))))
                                        (swap! derefed conj s)))
                                    (let [value (if init-context
                                                  (computation-fn init-context query-v)
