@@ -25,6 +25,7 @@
 
 (defonce ^:dynamic *context* {})
 (defonce ^:dynamic *current-sub-fn* ::computation-fn)
+(def logging-lock #?(:clj (Object.) :cljs (js/Object.)))
 
 (declare handlers reset-subscriptions! release! signal-interceptor)
 
@@ -121,8 +122,7 @@
                                                      (get @derefed s))
                                          (add-watch s query-v
                                                     (fn [_ _ old-value new-value]
-                                                      (when (not= old-value new-value)
-                                                        (run-reaction)))))
+                                                      (run-reaction))))
                                        (swap! derefed conj s)))
                                    (let [value (if init-context
                                                  (computation-fn init-context query-v)
@@ -134,8 +134,9 @@
                                                (swap! running disj query-v)])
                                      value))))
                              (catch #?(:clj Exception :cljs js/Error) e
-                               #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
-                                  :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e))))))))]
+                               (locking logging-lock
+                                 #?(:clj (println ":signum.subs/subscribe" (pr-str query-v) "error\n" e)
+                                    :cljs (js/console.error (str ":signum.subs/subscribe " (pr-str query-v) " error\n") e)))))))))]
     (run-reaction)
     #?(:clj (swap! signals update query-v merge {:counter compute-fn-counter
                                                  :timer compute-fn-timer}))
